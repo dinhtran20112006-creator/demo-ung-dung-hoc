@@ -1,0 +1,7 @@
+{
+  "name": "demo ",
+  "description": "An advanced study tool combining the Cornell Notes system, Feynman technique, spaced repetition, and AI-powered question generation to enhance learning.",
+  "requestFramePermissions": [
+    "microphone"
+  ]
+}
