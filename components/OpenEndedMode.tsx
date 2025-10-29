@@ -1,4 +1,3 @@
-
 import React, { useState } from 'react';
 import { X, ChevronRight, ChevronLeft, Lightbulb, Target } from 'lucide-react';
 import { GoogleGenAI } from "@google/genai";
@@ -82,8 +81,11 @@ Giữ ngắn gọn (dưới 150 từ) và viết bằng tiếng Việt.
 `;
 
       const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: "gemini-2.5-pro",
         contents: prompt,
+        config: {
+          thinkingConfig: { thinkingBudget: 32768 }
+        }
       });
 
       return response.text;
@@ -116,7 +118,7 @@ Giữ ngắn gọn (dưới 150 từ) và viết bằng tiếng Việt.
 
   if (showEvaluation) {
     return (
-      <div className={`fixed inset-0 ${darkMode ? 'bg-gray-900' : 'bg-gradient-to-br from-blue-50 to-indigo-100'} z-50 p-6 overflow-y-auto`}>
+      <div className={`fixed inset-0 ${darkMode ? 'bg-gray-900 text-white' : 'bg-gradient-to-br from-blue-50 to-indigo-100'} z-50 p-6 overflow-y-auto`}>
         <div className="max-w-4xl mx-auto">
           <div className={`${darkMode ? 'bg-gray-800' : 'bg-white'} rounded-2xl shadow-xl p-8`}>
             <div className="flex justify-between items-center mb-6">
@@ -184,7 +186,7 @@ Giữ ngắn gọn (dưới 150 từ) và viết bằng tiếng Việt.
   }
 
   return (
-    <div className={`fixed inset-0 ${darkMode ? 'bg-gray-900' : 'bg-gradient-to-br from-blue-50 to-indigo-100'} z-50 flex flex-col`}>
+    <div className={`fixed inset-0 ${darkMode ? 'bg-gray-900 text-white' : 'bg-gradient-to-br from-blue-50 to-indigo-100'} z-50 flex flex-col`}>
       {/* Header */}
       <div className={`${darkMode ? 'bg-gray-800' : 'bg-white'} shadow-lg p-4 flex justify-between items-center`}>
         <div className="flex items-center gap-4">

@@ -88,8 +88,11 @@ Giữ nguyên định dạng trên và viết bằng tiếng Việt.
 `;
 
       const response = await ai.models.generateContent({
-        model: "gemini-2.5-flash",
+        model: "gemini-2.5-pro",
         contents: prompt,
+        config: {
+          thinkingConfig: { thinkingBudget: 32768 }
+        }
       });
 
       setAiFeedback(response.text);
@@ -125,7 +128,7 @@ Giữ nguyên định dạng trên và viết bằng tiếng Việt.
   };
 
   return (
-    <div className={`fixed inset-0 ${darkMode ? 'bg-gray-900' : 'bg-gradient-to-br from-blue-50 to-indigo-100'} z-50 flex flex-col`}>
+    <div className={`fixed inset-0 ${darkMode ? 'bg-gray-900 text-white' : 'bg-gradient-to-br from-blue-50 to-indigo-100'} z-50 flex flex-col`}>
       {/* Header */}
       <div className={`${darkMode ? 'bg-gray-800' : 'bg-white'} shadow-lg p-4 flex justify-between items-center`}>
         <div className="flex items-center gap-4">

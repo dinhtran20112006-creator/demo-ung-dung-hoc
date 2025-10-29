@@ -1,7 +1,6 @@
-
-import React, { useState, useEffect, useMemo, useRef } from 'react';
+import React, { useState, useEffect, useMemo, useRef, useCallback } from 'react';
 import { GoogleGenAI } from "@google/genai";
-import { Award, BarChart3, BookOpen, Brain, BrainCircuit, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clock, Download, Flame, Folder, FolderOpen, Lightbulb, Moon, Play, Plus, RefreshCw, Settings, Sparkles, Square, Star, Sun, Target, ThumbsDown, ThumbsUp, Trash2, Trophy, Upload, Volume2, VolumeX, X, Zap } from 'lucide-react';
+import { Award, BarChart3, BookOpen, Brain, BrainCircuit, CalendarDays, ChevronDown, ChevronLeft, ChevronRight, ChevronUp, Clock, Download, Flame, Folder, FolderOpen, Lightbulb, Moon, Play, Plus, RefreshCw, Settings, Sparkles, Square, Star, Sun, Target, ThumbsDown, ThumbsUp, Trash2, Trophy, Upload, Volume2, VolumeX, X, Zap, Check, AlertTriangle, Info, HelpCircle, Palette, Mic, MicOff, ShieldCheck, Eye, UploadCloud } from 'lucide-react';
 import { EnhancedSpacedRepetition } from './enhanced-spaced-repetition';
 import BlankPaperMode from './components/BlankPaperMode';
 import LeitnerBoxVisualization from './components/LeitnerBoxVisualization';
@@ -9,82 +8,13 @@ import EnhancedStudyModeSelector from './components/EnhancedStudyModeSelector';
 import CalendarView from './components/CalendarView';
 import ABTestingDashboard from './components/ABTestingDashboard';
 import OpenEndedMode from './components/OpenEndedMode';
-
-
-// Define interfaces for our data structures for better type safety
-interface StudyRecord {
-    confidence: string;
-    id: number;
-    date: string;
-}
-
-interface Topic {
-    id: number;
-    question: string;
-    answer: string;
-    studies: StudyRecord[];
-    isAI: boolean;
-    // New fields for enhanced spaced repetition
-    stability?: number;
-    interval?: number;
-    repetitions?: number;
-    dueDate?: string;
-    algorithm?: string;
-    // New fields from enhanced AI questions
-    difficulty?: 'easy' | 'medium' | 'hard' | string | number;
-    type?: 'concept' | 'application' | 'analysis' | 'evaluation' | string;
-    createdAt?: string;
-    chapterId?: number;
-    feedback?: 'good' | 'bad' | null;
-}
-
-interface Chapter {
-    id: number;
-    name: string;
-    topics: Topic[];
-    feynmanNotes: string;
-}
-
-interface Subject {
-    id: number;
-    name: string;
-    chapters: Chapter[];
-}
-
-interface ChatMessage {
-    id: number;
-    role: 'user' | 'assistant';
-    content: string;
-    timestamp: Date;
-}
-
-interface Badge {
-    id: string;
-    name: string;
-    description: string;
-    icon: React.ElementType;
-    unlocked: boolean;
-    date?: string;
-}
-
-// A/B Testing Interfaces for AI Prompts
-interface AIPromptVersion {
-  id: string;
-  name: string;
-  prompt: string;
-  qualityScore: number;
-  usageCount: number;
-  positiveFeedback: number;
-  negativeFeedback: number;
-}
-
-interface AIQuestionQuality {
-  promptVersion: string;
-  topicId: number;
-  feedback: 'good' | 'bad' | null;
-  userRating?: number;
-  autoQualityScore: number;
-}
+import AIPromptManager from './components/AIPromptManager';
+import { Subject, Chapter, Topic, AIPromptVersion, AIQuestionQuality, Badge, ChatMessage, QuizConfig, QuizSession, QuizResult } from './interfaces/quiz';
+import { QuizEngine } from './utils/quiz-engine';
+import QuizConfigurator from './components/QuizConfigurator';
+import EnhancedQuizSession from './components/EnhancedQuizSession';
+import AdvancedQuizResults from './components/AdvancedQuizResults';
+import ModernFlashcard from './components/ModernFlashcard';
 
 
 // Helper function to validate the structure of imported data
@@ -120,6 +50,24 @@ const isValidImportData = (data: any): boolean => {
     return true;
 };
 
+// Mock Leaderboard Data
+const mockLeaderboard = [
+    { rank: 1, avatar: '🐉', username: 'StudyDragon', xp: 3450, badges: ['🏆', '🔥 12'] },
+    { rank: 2, avatar: '🧠', username: 'Brainiac', xp: 2890, badges: ['⚡', '🔥 9'] },
+    { rank: 3, avatar: '🦉', username: 'NightOwl', xp: 2150, badges: ['🌙', '🔥 7'] },
+    { rank: 4, avatar: '⚛️', username: 'QuantumLeap', xp: 1550, badges: ['🔥 4'] },
+];
+
+interface AIDecisionLogEntry {
+    id: number;
+    timestamp: Date;
+    action: string;
+    reason: string;
+    decision: string;
+    icon: React.ElementType;
+}
+
+
 const App = () => {
     const [subjects, setSubjects] = useState<Subject[]>([]);
     const [expandedSubject, setExpandedSubject] = useState<number | null>(null);
@@ -139,6 +87,7 @@ const App = () => {
     const [isAudioOn, setIsAudioOn] = useState(true);
     const [darkMode, setDarkMode] = useState(false);
     const [showABTesting, setShowABTesting] = useState(false);
+    const [showPromptManager, setShowPromptManager] = useState(false);
 
 
     // Gamification State
@@ -149,7 +98,8 @@ const App = () => {
     
     // New Gamification Features
     const [badges, setBadges] = useState<{[key: string]: Badge}>({});
-    const [badgeNotification, setBadgeNotification] = useState<Badge | null>(null);
+    const [badgeNotifications, setBadgeNotifications] = useState<Badge[]>([]);
+    const [achievementToast, setAchievementToast] = useState<{title: string, description: string, icon: string, xp: number} | null>(null);
 
 
     const [subjectInput, setSubjectInput] = useState('');
@@ -170,6 +120,37 @@ const App = () => {
     const [isAwaitingNext, setIsAwaitingNext] = useState(false);
     const [selectedConfidence, setSelectedConfidence] = useState<string | null>(null);
     const timeoutRef = useRef<number | null>(null);
+    const saveTimeoutRef = useRef<number | null>(null);
+    const [confettiPieces, setConfettiPieces] = useState<any[]>([]);
+    const [swipeState, setSwipeState] = useState({ x: 0, y: 0, rotation: 0, feedback: '', moving: false });
+    const cardRef = useRef<HTMLDivElement>(null);
+    const gestureState = useRef({ startX: 0, startY: 0, isDragging: false });
+    const [cardAnimationClass, setCardAnimationClass] = useState('card-enter');
+    const [showKeyboardHint, setShowKeyboardHint] = useState(true);
+    const [showShortcutsModal, setShowShortcutsModal] = useState(false);
+    const [hintState, setHintState] = useState({ level: 0, text: '', show: false, isPulsing: false });
+    const autoHintTimerRef = useRef<number | null>(null);
+    const [studyTheme, setStudyTheme] = useState('default');
+    const [comboCount, setComboCount] = useState(0);
+    const [comboBonus, setComboBonus] = useState(0);
+    const [cardStep, setCardStep] = useState('recall'); // recall, front, assess, confidence
+    const recallTimeoutRef = useRef<number | null>(null);
+    const [memoryStrength, setMemoryStrength] = useState({ level: 0, nextReview: '', display: false });
+    const [showChapterHeader, setShowChapterHeader] = useState(false);
+    const [studySessionStats, setStudySessionStats] = useState<{startTime: number, cards: {confidence: string, responseTime: number}[], duration: number, cardCount: number} | null>(null);
+    const [isVoiceControlOn, setIsVoiceControlOn] = useState(false);
+    const recognitionRef = useRef<any>(null);
+
+    // New Advanced Features State
+    const [showBurnoutIntervention, setShowBurnoutIntervention] = useState(false);
+    const [showAIDecisionLog, setShowAIDecisionLog] = useState(false);
+    const [aiDecisionLog, setAiDecisionLog] = useState<AIDecisionLogEntry[]>([]);
+    const [showDiagramAnalysis, setShowDiagramAnalysis] = useState(false);
+    const [biasCheckResult, setBiasCheckResult] = useState<string | null>(null);
+    const [isCheckingBias, setIsCheckingBias] = useState(false);
+
+     // Accessibility State
+    const [srAnnouncement, setSrAnnouncement] = useState('');
     
     // AI Generation & Filtering State
     const [aiDifficulty, setAiDifficulty] = useState<'mixed' | 'easy' | 'medium' | 'hard'>('mixed');
@@ -259,11 +240,43 @@ const App = () => {
         usageCount: 0,
         positiveFeedback: 0,
         negativeFeedback: 0
+      },
+      {
+        id: 'v4',
+        name: 'Prompt Feynman - Giản Hóa',
+        prompt: `Bạn là một chuyên gia áp dụng Kỹ thuật Feynman. Nhiệm vụ của bạn là tạo ra các câu hỏi từ nội dung sau, tập trung vào việc **giản lược hóa khái niệm** và **tìm ra lỗ hổng kiến thức**.
+
+**NỘI DUNG:**
+{notes}
+
+**QUY TRÌNH BẮT BUỘC:**
+1.  **Giả Lập Giảng Dạy:** Đọc kỹ nội dung và tưởng tượng bạn phải dạy nó cho một người hoàn toàn mới.
+2.  **TẠO CÂU HỎI "Giản Lược Hóa":** Tạo các câu hỏi yêu cầu người học phải giải thích các ý tưởng phức tạp bằng ngôn từ đơn giản nhất, hoặc dùng ví dụ/phép ẩn dụ.
+    -   **NÊN DÙNG:** "Giải thích [chủ đề X] trong một câu duy nhất.", "Hãy đưa ra một phép ví von trong đời thực cho [khái niệm Y]."
+3.  **TẠO CÂU HỎI "Tìm Lỗ Hổng":** Tạo các câu hỏi nhắm vào những điểm mà sự hiểu biết có thể còn hời hợt.
+    -   **NÊN DÙNG:** "Sai lầm phổ biến nhất khi nghĩ về [chủ đề Z] là gì?", "Nếu phải loại bỏ một chi tiết khỏi lời giải thích này, đó sẽ là gì và tại sao?"
+4.  **Phân Loại & Định Dạng:** Với MỖI câu hỏi, xác định độ khó và loại.
+    -   **Độ khó:** 'easy', 'medium', 'hard'. Bám sát yêu cầu độ khó: {difficulty}.
+    -   **Loại:** 'concept', 'application', 'analysis', 'evaluation'.
+5.  **ĐỊNH DẠNG ĐẦU RA (CỰC KỲ QUAN TRỌNG):**
+    -   Trả về KẾT QUẢ CUỐI CÙNG dưới dạng danh sách.
+    -   Mỗi mục trên một dòng riêng.
+    -   TUÂN THỦ NGHIÊM NGẶT định dạng:
+        "Câu hỏi? | Đáp án | Độ khó | Loại"`,
+        qualityScore: 0.83,
+        usageCount: 0,
+        positiveFeedback: 0,
+        negativeFeedback: 0
       }
     ]);
 
     const [aiQuestionQuality, setAiQuestionQuality] = useState<AIQuestionQuality[]>([]);
     const [currentPromptVersion, setCurrentPromptVersion] = useState('v1');
+    const [toasts, setToasts] = useState<Array<{
+        id: number;
+        message: string;
+        type: 'success' | 'error' | 'info' | 'warning';
+    }>>([]);
     
     // Deletion Confirmation State
     const [deleteConfirm, setDeleteConfirm] = useState<{
@@ -278,12 +291,24 @@ const App = () => {
       message: ''
     });
 
+    // Advanced Quiz State
+    const quizEngine = useMemo(() => {
+        if (subjects.length > 0) {
+            return new QuizEngine(subjects);
+        }
+        return null;
+    }, [subjects]
+    );
+    const [quizConfigurator, setQuizConfigurator] = useState(false);
+    const [quizSession, setQuizSession] = useState<QuizSession | null>(null);
+    const [quizResult, setQuizResult] = useState<QuizResult | null>(null);
+
 
     const confidenceLevels = [
-        { value: 'red', label: 'Rất yếu', color: 'bg-red-100 text-red-800 hover:bg-red-200', emoji: '😫', xp: 10, performance: 1 },
-        { value: 'orange', label: 'Yếu', color: 'bg-orange-100 text-orange-800 hover:bg-orange-200', emoji: '😕', xp: 25, performance: 2 },
-        { value: 'yellow', label: 'Tốt', color: 'bg-yellow-100 text-yellow-800 hover:bg-yellow-200', emoji: '😊', xp: 50, performance: 3 },
-        { value: 'green', label: 'Xuất sắc', color: 'bg-green-100 text-green-800 hover:bg-green-200', emoji: '🎉', xp: 100, performance: 4 },
+        { value: 'red', label: 'Rất yếu', className: 'confidence-red', emoji: '😫', xp: 10, performance: 1 },
+        { value: 'orange', label: 'Yếu', className: 'confidence-orange', emoji: '😕', xp: 25, performance: 2 },
+        { value: 'yellow', label: 'Tốt', className: 'confidence-yellow', emoji: '😊', xp: 50, performance: 3 },
+        { value: 'green', label: 'Xuất sắc', className: 'confidence-green', emoji: '🎉', xp: 100, performance: 4 },
     ];
     
      const ALL_BADGES: Omit<Badge, 'unlocked' | 'date'>[] = useMemo(() => [
@@ -298,46 +323,109 @@ const App = () => {
         { id: 'perfect_score', name: 'Perfect Score', description: 'Đạt 100% trong một bài quiz.', icon: Target },
     ], []);
 
+    const totalTopics = useMemo(() => 
+        subjects.reduce((sum, s) => 
+            sum + s.chapters.reduce((cSum, c) => cSum + c.topics.length, 0), 0
+        ), [subjects]
+    );
 
-     useEffect(() => {
-        let interval: number;
-        if (isPomodoroActive && pomodoroTime > 0) {
-            interval = window.setInterval(() => {
-                setPomodoroTime(time => time - 1);
-            }, 1000);
-        } else if (isPomodoroActive && pomodoroTime === 0) {
-            setIsPomodoroActive(false);
-            if (isAudioOn) {
-                const audio = new Audio('data:audio/wav;base64,UklGRigAAABXQVZFZm10IBAAAAABAAEARKwAAIhYAQACABAAZGF0YQQAAAAAAA==');
-                audio.play();
-            }
-            
-            if (pomodoroSessionType === 'work') {
-                alert('Pomodoro hoàn thành! Nghỉ ngơi thôi!');
-                setPomodoroSessionType('break');
-                setPomodoroTime(pomodoroBreakDuration * 60);
-            } else {
-                alert('Hết giờ nghỉ! Quay lại làm việc nào!');
-                setPomodoroSessionType('work');
-                setPomodoroTime(pomodoroWorkDuration * 60);
+    const showToast = useCallback((message: string, type: 'success' | 'error' | 'info' | 'warning' = 'info') => {
+        const id = Date.now();
+        setToasts(prev => [...prev, { id, message, type }]);
+        setTimeout(() => {
+            setToasts(prev => prev.filter(t => t.id !== id));
+        }, 3000);
+    }, []);
+
+    const handlePomodoroComplete = useCallback(() => {
+        if (isAudioOn) {
+            try {
+                const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                
+                oscillator.frequency.value = 800;
+                oscillator.type = 'sine';
+                gainNode.gain.value = 0.1;
+                
+                oscillator.start();
+                setTimeout(() => {
+                    oscillator.stop();
+                    audioContext.close();
+                }, 1000);
+            } catch (e) {
+                console.log('Audio not supported');
             }
         }
-        return () => clearInterval(interval);
-    }, [isPomodoroActive, pomodoroTime, isAudioOn, pomodoroSessionType, pomodoroWorkDuration, pomodoroBreakDuration]);
+        
+        if (pomodoroSessionType === 'work') {
+            showToast('Pomodoro hoàn thành! Nghỉ ngơi thôi!', 'success');
+            setPomodoroSessionType('break');
+            setPomodoroTime(pomodoroBreakDuration * 60);
+        } else {
+            showToast('Hết giờ nghỉ! Quay lại làm việc nào!', 'info');
+            setPomodoroSessionType('work');
+            setPomodoroTime(pomodoroWorkDuration * 60);
+        }
+    }, [isAudioOn, pomodoroSessionType, pomodoroBreakDuration, pomodoroWorkDuration, showToast]);
+
+     useEffect(() => {
+        let interval: number | undefined;
+        
+        if (isPomodoroActive && pomodoroTime > 0) {
+            interval = window.setInterval(() => {
+                setPomodoroTime(time => {
+                    if (time <= 1) {
+                        clearInterval(interval!);
+                        setIsPomodoroActive(false);
+                        handlePomodoroComplete();
+                        return 0;
+                    }
+                    return time - 1;
+                });
+            }, 1000);
+        }
+        
+        return () => {
+            if (interval) clearInterval(interval);
+        };
+    }, [isPomodoroActive, pomodoroTime, handlePomodoroComplete]);
 
 
     useEffect(() => {
-        loadData();
-         // Cleanup timeout on component unmount
-         return () => {
+        const init = async () => {
+            await loadData();
+        };
+        init();
+        
+        return () => {
             if (timeoutRef.current) {
                 clearTimeout(timeoutRef.current);
+            }
+             // Cleanup voice recognition
+            if (recognitionRef.current) {
+                recognitionRef.current.stop();
             }
         };
     }, []);
 
     useEffect(() => {
-        saveData();
+        if (saveTimeoutRef.current) {
+            clearTimeout(saveTimeoutRef.current);
+        }
+        
+        saveTimeoutRef.current = window.setTimeout(() => {
+            saveData();
+        }, 1000);
+        
+        return () => {
+            if (saveTimeoutRef.current) {
+                clearTimeout(saveTimeoutRef.current);
+            }
+        };
     }, [subjects, totalXP, currentStreak, lastStudyDate, badges, darkMode, pomodoroWorkDuration, pomodoroBreakDuration, aiPromptVersions, aiQuestionQuality]);
 
     useEffect(() => {
@@ -358,75 +446,125 @@ const App = () => {
             ]);
         }
     }, [showAIChatbot]);
+    
+    const addAIDecisionLog = (action: string, reason: string, decision: string, icon: React.ElementType) => {
+        const newEntry: AIDecisionLogEntry = {
+            id: Date.now(),
+            timestamp: new Date(),
+            action,
+            reason,
+            decision,
+            icon,
+        };
+        setAiDecisionLog(prev => [newEntry, ...prev].slice(0, 20)); // Keep last 20 entries
+    };
 
-
-    const saveData = () => {
+    const saveData = async () => {
         try {
             const data = { subjects, totalXP, currentStreak, lastStudyDate, badges, level, darkMode, pomodoroWorkDuration, pomodoroBreakDuration, aiPromptVersions, aiQuestionQuality };
-            localStorage.setItem('cornell-data', JSON.stringify(data));
+            await (window as any).storage?.set('cornell-data', JSON.stringify(data));
         } catch (e) {
             console.error('Error saving:', e);
+            showToast('Lỗi lưu dữ liệu', 'error');
         }
     };
 
-    const loadData = () => {
+    const initializeDefaultData = () => {
+        const initialBadges: {[key: string]: Badge} = {};
+        ALL_BADGES.forEach(b => {
+            initialBadges[b.id] = { ...b, unlocked: false };
+        });
+        setBadges(initialBadges);
+    };
+
+    const loadData = async () => {
         try {
-            // Load main data
-            const result = localStorage.getItem('cornell-data');
-            if (result) {
-                const data = JSON.parse(result);
-                setSubjects(data.subjects?.map((s: Subject) => ({
-                    ...s,
-                    chapters: s.chapters.map((c: Chapter) => ({
-                        ...c,
-                        feynmanNotes: c.feynmanNotes || '' // Handle old data without feynmanNotes
-                    }))
-                })) || []);
-                setTotalXP(data.totalXP || 0);
-                setCurrentStreak(data.currentStreak || 0);
-                setLastStudyDate(data.lastStudyDate || null);
-                
-                const initialBadges: {[key: string]: Badge} = {};
-                ALL_BADGES.forEach(b => {
-                    initialBadges[b.id] = { ...b, unlocked: false };
-                });
-                
+            const result = await (window as any).storage?.get('cornell-data');
+            
+            if (!result || !result.value) {
+                console.log('No saved data found, initializing defaults');
+                initializeDefaultData();
+                return;
+            }
+            
+            let data;
+            try {
+                data = JSON.parse(result.value);
+            } catch (parseError) {
+                console.error('Failed to parse saved data:', parseError);
+                showToast('⚠️ Dữ liệu bị lỗi. Khởi tạo lại.', 'error');
+                initializeDefaultData();
+                return;
+            }
+            
+            if (!isValidImportData(data)) {
+                console.error('Invalid data structure');
+                showToast('⚠️ Cấu trúc dữ liệu không hợp lệ. Khởi tạo lại.', 'warning');
+                initializeDefaultData();
+                return;
+            }
+            
+            setSubjects(data.subjects?.map((s: Subject) => ({
+                ...s,
+                chapters: s.chapters?.map((c: Chapter) => ({
+                    ...c,
+                    feynmanNotes: c.feynmanNotes || '',
+                    topics: c.topics || []
+                })) || []
+            })) || []);
+            
+            setTotalXP(Number(data.totalXP) || 0);
+            setCurrentStreak(Number(data.currentStreak) || 0);
+            setLastStudyDate(data.lastStudyDate || null);
+            setLevel(Number(data.level) || 1);
+            setDarkMode(Boolean(data.darkMode));
+            setPomodoroWorkDuration(Number(data.pomodoroWorkDuration) || 25);
+            setPomodoroBreakDuration(Number(data.pomodoroBreakDuration) || 5);
+            setPomodoroTime((Number(data.pomodoroWorkDuration) || 25) * 60);
+            
+            const initialBadges: {[key: string]: Badge} = {};
+            ALL_BADGES.forEach(b => {
+                initialBadges[b.id] = { 
+                    ...b, 
+                    unlocked: false,
+                    date: undefined 
+                };
+            });
+            
+            if (data.badges) {
                 if (Array.isArray(data.badges)) {
                     data.badges.forEach((b: any) => {
-                       if (b && initialBadges[b.id]) {
-                           initialBadges[b.id] = { ...initialBadges[b.id], ...b, unlocked: true };
-                       }
+                        if (b && b.id && initialBadges[b.id]) {
+                            initialBadges[b.id] = { 
+                                ...initialBadges[b.id], 
+                                ...b, 
+                                unlocked: Boolean(b.unlocked) 
+                            };
+                        }
                     });
                 } else if (typeof data.badges === 'object' && data.badges !== null) {
                     Object.keys(data.badges).forEach(badgeId => {
                         if (initialBadges[badgeId] && data.badges[badgeId]?.unlocked) {
-                            initialBadges[badgeId] = { ...initialBadges[badgeId], ...data.badges[badgeId] };
+                            initialBadges[badgeId] = { 
+                                ...initialBadges[badgeId], 
+                                ...data.badges[badgeId] 
+                            };
                         }
                     });
                 }
-                setBadges(initialBadges);
-                
-                setLevel(data.level || 1);
-                setDarkMode(data.darkMode || false);
-                setPomodoroWorkDuration(data.pomodoroWorkDuration || 25);
-                setPomodoroBreakDuration(data.pomodoroBreakDuration || 5);
-                setPomodoroTime((data.pomodoroWorkDuration || 25) * 60);
-
-                if (data.aiPromptVersions) setAiPromptVersions(data.aiPromptVersions);
-                if (data.aiQuestionQuality) setAiQuestionQuality(data.aiQuestionQuality);
-
-            } else {
-                const initialBadges: {[key: string]: Badge} = {};
-                ALL_BADGES.forEach(b => {
-                    initialBadges[b.id] = { ...b, unlocked: false };
-                });
-                setBadges(initialBadges);
             }
+            setBadges(initialBadges);
 
-        } catch (e) {
-            console.log('No saved data or parse error');
+            if (data.aiPromptVersions) setAiPromptVersions(data.aiPromptVersions);
+            if (data.aiQuestionQuality) setAiQuestionQuality(data.aiQuestionQuality);
+
+        } catch (error) {
+            console.error('Critical error loading data:', error);
+            showToast('❌ Không thể tải dữ liệu.', 'error');
+            initializeDefaultData();
         }
     };
+
     const exportData = () => {
         const data = { subjects, totalXP, currentStreak, lastStudyDate, badges, level, darkMode, pomodoroWorkDuration, pomodoroBreakDuration, aiPromptVersions, aiQuestionQuality };
         const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
@@ -480,11 +618,11 @@ const App = () => {
                     setPomodoroBreakDuration(data.pomodoroBreakDuration || 5);
                     if (data.aiPromptVersions) setAiPromptVersions(data.aiPromptVersions);
                     if (data.aiQuestionQuality) setAiQuestionQuality(data.aiQuestionQuality);
-                    alert('Nhập dữ liệu thành công!');
+                    showToast('Nhập dữ liệu thành công!', 'success');
                 }
             } catch (e) {
                 const message = e instanceof Error ? e.message : "Đã xảy ra lỗi không xác định.";
-                alert(`Nhập thất bại: ${message}`);
+                showToast(`Nhập thất bại: ${message}`, 'error');
             } finally {
                 event.target.value = '';
             }
@@ -496,43 +634,32 @@ const App = () => {
         const newBadges: string[] = [];
         
         const award = (badgeId: string) => {
-            if (!badges[badgeId] || !badges[badgeId].unlocked) {
+            if (!badges[badgeId]?.unlocked) {
                 newBadges.push(badgeId);
             }
         };
 
-        // 1. Newbie: First subject
         if (subjects.length > 0) award('newbie');
         
-        // 2. First Study
         const hasStudied = subjects.some(s => s.chapters.some(c => c.topics.some(t => t.studies.length > 0)));
         if (hasStudied) award('first_study');
 
-        // 3. AI Scholar
         const hasAITopic = subjects.some(s => s.chapters.some(c => c.topics.some(t => t.isAI)));
         if (hasAITopic) award('ai_scholar');
         
-        // 4. Streak 3 days
         if (currentStreak >= 3) award('streak_3');
         if (currentStreak >= 7) award('on_fire');
 
-
-        // 5. Expert
         const hasMasteredTopic = subjects.some(s => s.chapters.some(c => c.topics.some(t => enhancedSpacedRepetition.getMasteryLevel(t) === 5)));
         if (hasMasteredTopic) award('expert');
 
-        // 6. Collector
-        const totalTopics = subjects.reduce((acc, s) => acc + s.chapters.reduce((cAcc, c) => cAcc + c.topics.length, 0), 0);
         if (totalTopics >= 50) award('collector');
         
-        // 7. Chapter Master
         const hasMasteredChapter = subjects.some(s => s.chapters.some(c => 
             c.topics.length > 5 && c.topics.every(t => enhancedSpacedRepetition.getMasteryLevel(t) >= 4)
         ));
         if (hasMasteredChapter) award('chapter_master');
 
-        
-        // Event-based badges
         if (event) {
             if (event.type === 'quiz' && event.score === 1) {
                 award('perfect_score');
@@ -543,20 +670,26 @@ const App = () => {
         if (newBadges.length > 0) {
             const unlockedBadges: {[key: string]: Badge} = { ...badges };
             const today = new Date().toISOString().split('T')[0];
+            const notifications: Badge[] = [];
             
             newBadges.forEach(badgeId => {
                 const badgeInfo = ALL_BADGES.find(b => b.id === badgeId);
                 if (badgeInfo) {
                     const newBadge: Badge = { ...badgeInfo, unlocked: true, date: today };
                     unlockedBadges[badgeId] = newBadge;
-                    
-                    if (newBadges.indexOf(badgeId) === 0) {
-                        setBadgeNotification(newBadge);
-                        setTimeout(() => setBadgeNotification(null), 5000);
-                    }
+                    notifications.push(newBadge);
                 }
             });
             setBadges(unlockedBadges);
+
+            if (notifications.length > 0) {
+                setBadgeNotifications(prev => [...prev, ...notifications]);
+                notifications.forEach((badge, index) => {
+                    setTimeout(() => {
+                        setBadgeNotifications(prev => prev.filter(b => b.id !== badge.id));
+                    }, 5000 + (index * 1000));
+                });
+            }
         }
     };
     
@@ -659,16 +792,22 @@ const App = () => {
                 if (p.id === promptVersionId) {
                     const positiveIncrement = feedback === 'good' ? 1 : 0;
                     const negativeIncrement = feedback === 'bad' ? 1 : 0;
-                    const totalFeedback = p.positiveFeedback + p.negativeFeedback;
                     
-                    const currentTotalValue = p.qualityScore * totalFeedback;
-                    const newValue = feedback === 'good' ? 1 : 0.2;
-                    const newQualityScore = (currentTotalValue + newValue) / (totalFeedback + 1);
+                    const currentPositive = p.positiveFeedback || 0;
+                    const currentNegative = p.negativeFeedback || 0;
+                    
+                    const newPositive = currentPositive + positiveIncrement;
+                    const newNegative = currentNegative + negativeIncrement;
+                    const totalFeedback = newPositive + newNegative;
+                    
+                    const newQualityScore = totalFeedback > 0 
+                        ? (newPositive / totalFeedback) 
+                        : p.qualityScore;
                     
                     return {
                         ...p,
-                        positiveFeedback: p.positiveFeedback + positiveIncrement,
-                        negativeFeedback: p.negativeFeedback + negativeIncrement,
+                        positiveFeedback: newPositive,
+                        negativeFeedback: newNegative,
                         qualityScore: parseFloat(newQualityScore.toFixed(4))
                     };
                 }
@@ -711,22 +850,33 @@ const App = () => {
         ));
     };
     
-    // A/B testing function to select a prompt version
-    const getRandomPromptVersion = (): AIPromptVersion => {
-        const weights = aiPromptVersions.map(v => 
-            v.usageCount === 0 ? 2 : (v.qualityScore * (1 + v.positiveFeedback / (v.positiveFeedback + v.negativeFeedback + 1)))
-        );
-        const totalWeight = weights.reduce((sum, w) => sum + w, 0);
-        let random = Math.random() * totalWeight;
-      
-        for (let i = 0; i < aiPromptVersions.length; i++) {
-            random -= weights[i];
-            if (random <= 0) {
-                return aiPromptVersions[i];
+    // Multi-Armed Bandit prompt selection
+    const getBestPromptVersion = (): AIPromptVersion => {
+        const totalUses = aiPromptVersions.reduce((sum, v) => sum + v.usageCount, 0);
+
+        let bestPrompt = aiPromptVersions[0];
+        let maxScore = -1;
+
+        aiPromptVersions.forEach(variant => {
+            const exploitationTerm = variant.qualityScore;
+            // Add a small epsilon to avoid division by zero
+            const explorationBonus = Math.sqrt((2 * Math.log(totalUses + 1)) / (variant.usageCount + 1e-5));
+            const score = exploitationTerm + explorationBonus;
+
+            if (score > maxScore) {
+                maxScore = score;
+                bestPrompt = variant;
             }
-        }
-      
-        return aiPromptVersions[0];
+        });
+
+        addAIDecisionLog(
+            'Chọn Prompt AI',
+            `Tổng sử dụng: ${totalUses}, Quality: ${bestPrompt.qualityScore.toFixed(2)}, Lượt dùng: ${bestPrompt.usageCount}`,
+            `Chọn "${bestPrompt.name}" với điểm bandit là ${maxScore.toFixed(2)}`,
+            Zap
+        );
+
+        return bestPrompt;
     };
 
     // Auto-quality scoring for generated questions
@@ -741,10 +891,51 @@ const App = () => {
         return parseFloat(score.toFixed(4));
     };
 
+    // FIX: Moved parseEnhancedAIQuestions before its usage in enhancedAIQuestions to fix block-scoped variable error.
+    const parseEnhancedAIQuestions = (aiText: string): Topic[] => {
+        const lines = aiText.split('\n').filter(line => line.trim());
+        const questions: Topic[] = [];
+    
+        const VALID_DIFFICULTIES = ['easy', 'medium', 'hard'];
+        const VALID_TYPES = ['concept', 'application', 'analysis', 'evaluation'];
+    
+        lines.forEach(line => {
+            const parts = line.split('|').map(p => p.trim());
+    
+            if (parts.length >= 4) {
+                const [question, answer, rawDifficulty, rawType] = parts;
+    
+                const difficulty = VALID_DIFFICULTIES.includes(rawDifficulty.toLowerCase())
+                    ? rawDifficulty.toLowerCase() as 'easy' | 'medium' | 'hard'
+                    : 'medium';
+    
+                const type = VALID_TYPES.includes(rawType.toLowerCase())
+                    ? rawType.toLowerCase() as 'concept' | 'application' | 'analysis' | 'evaluation'
+                    : 'concept';
+    
+                if (question.length > 5 && answer.length > 3) {
+                    questions.push({
+                        id: Date.now() + Math.random(),
+                        question: question.trim(),
+                        answer: answer.trim(),
+                        difficulty,
+                        type,
+                        studies: [],
+                        isAI: true,
+                        createdAt: new Date().toISOString(),
+                        feedback: null,
+                    });
+                }
+            }
+        });
+    
+        return questions;
+    };
 
+    // FIX: Corrected the type definition for the 'difficulty' parameter.
     const enhancedAIQuestions = async (notesText: string, subjectId: number, chapterId: number, difficulty: 'mixed' | 'easy' | 'medium' | 'hard') => {
         if (!notesText.trim()) {
-            alert('Vui lòng nhập ghi chú!');
+            showToast('Vui lòng nhập ghi chú!', 'warning');
             return;
         }
     
@@ -752,7 +943,7 @@ const App = () => {
         try {
             const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
             
-            const promptVersion = getRandomPromptVersion();
+            const promptVersion = getBestPromptVersion();
             setCurrentPromptVersion(promptVersion.id);
             
             setAiPromptVersions(prev => 
@@ -780,15 +971,18 @@ const App = () => {
             const enhancedPrompt = promptVersion.prompt.replace('{notes}', notesText).replace('{difficulty}', difficultyInstruction);
     
             const response = await ai.models.generateContent({
-              model: "gemini-2.5-flash",
+              model: "gemini-2.5-pro",
               contents: enhancedPrompt,
+              config: {
+                thinkingConfig: { thinkingBudget: 32768 }
+              }
             });
     
             const generatedText = response.text;
             const questions = parseEnhancedAIQuestions(generatedText);
             
             if (questions.length === 0) {
-              alert('Không tạo được câu hỏi từ AI. Vui lòng thử lại với nội dung khác!');
+              showToast('AI không tạo được câu hỏi. Thử lại với nội dung khác!', 'warning');
               return;
             }
     
@@ -820,47 +1014,20 @@ const App = () => {
             setSubjects(updatedSubjects);
     
             setNotesInput('');
-            alert(`✅ Đã tạo ${questions.length} câu hỏi chất lượng cao bằng AI (${promptVersion.name})!`);
+            showToast(`✅ Đã tạo ${questions.length} câu hỏi bằng AI (${promptVersion.name})!`, 'success');
             
         } catch (e) {
             console.error('Enhanced AI Error:', e);
-            alert('Lỗi AI nâng cao: ' + (e instanceof Error ? e.message : 'Unknown error'));
+            showToast('Lỗi AI: ' + (e instanceof Error ? e.message : 'Unknown error'), 'error');
         } finally {
             setGeneratingQuestions(false);
         }
     };
     
-    const parseEnhancedAIQuestions = (aiText: string): Topic[] => {
-        const lines = aiText.split('\n').filter(line => line.trim());
-        const questions: Topic[] = [];
-        
-        lines.forEach(line => {
-            const parts = line.split('|').map(p => p.trim());
-            if (parts.length >= 4) { // Handle optional Bloom level
-                const [question, answer, difficulty, type] = parts;
-                if (question.length > 5 && answer.length > 3) {
-                    questions.push({
-                        id: Date.now() + Math.random(),
-                        question,
-                        answer,
-                        difficulty: difficulty as any,
-                        type: type as any,
-                        studies: [],
-                        isAI: true,
-                        createdAt: new Date().toISOString(),
-                        feedback: null,
-                    });
-                }
-            }
-        });
-        
-        return questions;
-    };
-
     const parseCornellNotes = (subjectId: number, chapterId: number, e?: React.MouseEvent) => {
         e?.stopPropagation();
         if (!notesInput.trim()) {
-            alert('Vui lòng nhập ghi chú!');
+            showToast('Vui lòng nhập ghi chú!', 'warning');
             return;
         }
 
@@ -915,7 +1082,7 @@ const App = () => {
                     i++;
                 }
                 if (questions.length === 0) {
-                    alert('Không tìm thấy câu hỏi hợp lệ.');
+                    showToast('Không tìm thấy câu hỏi hợp lệ.', 'warning');
                     setGeneratingQuestions(false);
                     return;
                 }
@@ -932,10 +1099,10 @@ const App = () => {
                 );
                 setSubjects(updatedSubjects);
                 setNotesInput('');
-                alert('Đã tạo ' + questions.length + ' câu hỏi!');
+                showToast('Đã tạo ' + questions.length + ' câu hỏi!', 'success');
 
             } catch (e) {
-                alert('Lỗi: ' + (e instanceof Error ? e.message : "Unknown error"));
+                showToast('Lỗi: ' + (e instanceof Error ? e.message : "Unknown error"), 'error');
             } finally {
                 setGeneratingQuestions(false);
             }
@@ -974,15 +1141,20 @@ const App = () => {
             s.id === subjectId ? { ...s, chapters: s.chapters.map(c =>
                 c.id === chapterId ? { ...c, topics: c.topics.map(t => {
                     if (t.id === topicId) {
-                        const newStudyRecord: StudyRecord = { confidence, id: Date.now(), date: today };
+                        const newStudyRecord = { confidence, id: Date.now(), date: today };
                         const studies = [...t.studies, newStudyRecord];
                         const topicForSr = {...t, studies};
-                        const srData = enhancedSpacedRepetition.calculateNextReview(topicForSr, performance);
-                        return { 
-                            ...t, 
-                            studies,
-                            ...srData 
-                        };
+                        try {
+                            const srData = enhancedSpacedRepetition.calculateNextReview(topicForSr, performance);
+                            return { 
+                                ...t, 
+                                studies,
+                                ...srData 
+                            };
+                        } catch (error) {
+                            console.error('Error calculating spaced repetition:', error);
+                            return { ...t, studies };
+                        }
                     }
                     return t;
                 })} : c
@@ -997,8 +1169,8 @@ const App = () => {
         
         if (type === 'subject') {
           const subject = data;
-          const totalTopics = subject.chapters?.reduce((sum: number, ch: Chapter) => sum + ch.topics.length, 0) || 0;
-          message = `Xóa môn "${subject.name}"? Sẽ mất ${totalTopics} câu hỏi trong ${subject.chapters?.length || 0} chương!`;
+          const totalTopicsInSubject = subject.chapters?.reduce((sum: number, ch: Chapter) => sum + ch.topics.length, 0) || 0;
+          message = `Xóa môn "${subject.name}"? Sẽ mất ${totalTopicsInSubject} câu hỏi trong ${subject.chapters?.length || 0} chương!`;
         } else if (type === 'chapter') {
           const { chapter } = data;
           message = `Xóa chương "${chapter.name}"? Sẽ mất ${chapter.topics.length} câu hỏi!`;
@@ -1023,7 +1195,7 @@ const App = () => {
             setExpandedSubject(null);
             setSelectedChapter(null);
           }
-           setTimeout(() => alert(`✅ Đã xóa môn "${subjectName}"`), 100);
+           showToast(`✅ Đã xóa môn "${subjectName}"`, 'success');
 
         } else if (type === 'chapter') {
           const { subjectId, chapter } = data;
@@ -1048,7 +1220,7 @@ const App = () => {
             delete newExpanded[chapterId];
             return newExpanded;
           });
-          setTimeout(() => alert(`✅ Đã xóa chương "${chapterName}"`), 100);
+          showToast(`✅ Đã xóa chương "${chapterName}"`, 'success');
         }
       
         setDeleteConfirm({ show: false, type: '', data: null, message: '' });
@@ -1073,7 +1245,7 @@ const App = () => {
         if (mode === 'review') {
             topicsToStudy = getTopicsForReview(subjectId, chapterId);
             if (topicsToStudy.length === 0) {
-                alert('🎉 Tuyệt vời! Hiện không có câu hỏi nào cần ôn tập trong chương này!');
+                showToast('🎉 Tuyệt vời! Không có câu hỏi nào cần ôn tập!', 'info');
                 return;
             }
         } else {
@@ -1084,6 +1256,11 @@ const App = () => {
         setStudyMode({ subjectId, chapterId, topics: topicsToStudy, mode });
         setCurrentCardIndex(0);
         setRevealed(false);
+        setCardAnimationClass('card-enter');
+        setShowKeyboardHint(true);
+        setCardStep('recall');
+        setStudySessionStats({ startTime: Date.now(), cards: [], duration: 0, cardCount: 0 });
+        setSrAnnouncement(`Bắt đầu chế độ học cho chương ${chapter.name}.`);
     };
 
     const getDueTopics = (subject: Subject): Topic[] => {
@@ -1093,46 +1270,57 @@ const App = () => {
         );
     };
     
-    const getWeakestTopics = (subject: Subject): Topic[] => {
+    const getWeakestTopics = (subject: Subject, count = 20): Topic[] => {
         const allTopics = subject.chapters.flatMap(c => c.topics);
         return allTopics.sort((a, b) => 
             (a.stability || 4) - (b.stability || 4)
-        ).slice(0, 20); // Get 20 weakest topics
+        ).slice(0, count);
     };
 
     const startEnhancedStudyMode = (subjectId: number, mode: 'spaced-repetition' | 'weakest-first') => {
         const subject = subjects.find(s => s.id === subjectId);
         if (!subject) return;
-      
+    
         let topicsToStudy: Topic[];
-        
+    
         switch (mode) {
-          case 'spaced-repetition':
-            topicsToStudy = getDueTopics(subject);
-            break;
-          case 'weakest-first':
-            topicsToStudy = getWeakestTopics(subject);
-            break;
+            case 'spaced-repetition':
+                topicsToStudy = getDueTopics(subject);
+                break;
+            case 'weakest-first':
+                topicsToStudy = getWeakestTopics(subject);
+                break;
+            default:
+                topicsToStudy = [];
         }
-      
+    
         if (topicsToStudy.length === 0) {
-          alert('Không có câu hỏi phù hợp cho chế độ học này!');
-          return;
+            showToast('Không có câu hỏi phù hợp cho chế độ học này!', 'info');
+            return;
         }
-
+    
         const topicsWithChapterId = subject.chapters.flatMap(c =>
-            c.topics.filter(t => topicsToStudy.some(ts => ts.id === t.id))
-            .map(t => ({...t, chapterId: c.id}))
+            c.topics
+                .filter(t => topicsToStudy.some(ts => ts.id === t.id))
+                .map(t => ({
+                    ...t,
+                    chapterId: c.id,
+                    chapterName: c.name
+                }))
         );
-      
-        setStudyMode({ 
-          subjectId: subject.id, 
-          topics: topicsWithChapterId.sort(() => Math.random() - 0.5), 
-          mode: 'enhanced',
-          enhancedType: mode 
+    
+        setStudyMode({
+            subjectId: subject.id,
+            topics: topicsWithChapterId.sort(() => Math.random() - 0.5),
+            mode: 'enhanced',
+            enhancedType: mode
         });
         setCurrentCardIndex(0);
         setRevealed(false);
+        setCardAnimationClass('card-enter');
+        setShowKeyboardHint(true);
+        setCardStep('recall');
+        setStudySessionStats({ startTime: Date.now(), cards: [], duration: 0, cardCount: 0 });
     };
 
     const handleStudyModeSelect = (subjectId: number, modeId: string) => {
@@ -1163,70 +1351,176 @@ const App = () => {
 
         const allTopics = subject.chapters.flatMap(c => c.topics);
         if (allTopics.length === 0) {
-            alert('Môn học này chưa có câu hỏi nào để học.');
+            showToast('Môn học này chưa có câu hỏi nào.', 'warning');
             return;
         }
 
         const topicsWithChapterId = subject.chapters.flatMap(c =>
-            c.topics.map(t => ({ ...t, chapterId: c.id }))
+            c.topics.map(t => ({ ...t, chapterId: c.id, chapterName: c.name }))
         );
 
         setStudyMode({ subjectId, topics: topicsWithChapterId.sort(() => Math.random() - 0.5), mode: 'interleaved' });
         setCurrentCardIndex(0);
         setRevealed(false);
+        setCardAnimationClass('card-enter');
+        setShowKeyboardHint(true);
+        setCardStep('recall');
+        setStudySessionStats({ startTime: Date.now(), cards: [], duration: 0, cardCount: 0 });
     };
 
-    const goToNextCard = () => {
-        if (timeoutRef.current) {
-            clearTimeout(timeoutRef.current);
-            timeoutRef.current = null;
-        }
-    
-        if (!studyMode) return;
-
-        if (currentCardIndex < studyMode.topics.length - 1) {
-            setCurrentCardIndex(currentCardIndex + 1);
-            setRevealed(false);
-            setIsAwaitingNext(false);
-            setSelectedConfidence(null);
-        } else {
-            exitStudyMode();
-            alert('🎊 Hoàn thành! Bạn đã học rất chăm chỉ!');
-        }
-    };
-
-    const exitStudyMode = () => {
-        if (timeoutRef.current) {
-            clearTimeout(timeoutRef.current);
-            timeoutRef.current = null;
-        }
+    const exitStudyMode = useCallback(() => {
+        if (timeoutRef.current) clearTimeout(timeoutRef.current);
+        if (recallTimeoutRef.current) clearTimeout(recallTimeoutRef.current);
+        if (autoHintTimerRef.current) clearTimeout(autoHintTimerRef.current);
+        
         setStudyMode(null);
         setRevealed(false);
         setIsAwaitingNext(false);
         setSelectedConfidence(null);
-    };
+        setHintState({ level: 0, text: '', show: false, isPulsing: false });
+        setComboCount(0);
+        setStudySessionStats(null);
+    }, []);
 
-    const handleConfidenceSelect = (confidence: string) => {
+
+    const goToNextCard = useCallback(() => {
+        if (!studyMode) return;
+        setSwipeState({ x: 0, y: 0, rotation: 0, feedback: '', moving: false });
+
+        if (currentCardIndex < studyMode.topics.length - 1) {
+            setCardAnimationClass('card-enter-next');
+            setCurrentCardIndex(currentCardIndex + 1);
+            setRevealed(false);
+            setIsAwaitingNext(false);
+            setSelectedConfidence(null);
+            setHintState({ level: 0, text: '', show: false, isPulsing: false });
+            setCardStep('recall');
+            setSrAnnouncement(`Câu hỏi tiếp theo. ${studyMode.topics[currentCardIndex + 1].question}`);
+        } else {
+            exitStudyMode();
+            showToast('🎊 Hoàn thành! Bạn đã học rất chăm chỉ!', 'success');
+        }
+    }, [studyMode, currentCardIndex, exitStudyMode, showToast]);
+    
+    const goToPreviousCard = useCallback(() => {
+        if (!studyMode || currentCardIndex === 0) return;
+        setCardAnimationClass('');
+        setCurrentCardIndex(prev => prev - 1);
+        setRevealed(false);
+        setIsAwaitingNext(false);
+        setSelectedConfidence(null);
+        setHintState({ level: 0, text: '', show: false, isPulsing: false });
+        setCardStep('recall');
+         setSrAnnouncement(`Quay lại câu hỏi trước. ${studyMode.topics[currentCardIndex - 1].question}`);
+    }, [studyMode, currentCardIndex]);
+
+    const createConfetti = () => {
+        const colors = ['#22c55e', '#16a34a', '#fde047', '#facc15'];
+        const newPieces = Array.from({ length: 30 }).map(() => ({
+          id: Math.random(),
+          style: {
+            left: `${40 + Math.random() * 20}%`,
+            top: `${40 + Math.random() * 20}%`,
+            transform: `rotate(${Math.random() * 360}deg)`,
+            backgroundColor: colors[Math.floor(Math.random() * colors.length)],
+            animationDelay: `${Math.random() * 0.2}s`,
+          },
+        }));
+        setConfettiPieces(newPieces);
+        setTimeout(() => setConfettiPieces([]), 2000);
+      };
+
+    const flipCard = useCallback(() => {
         if (isAwaitingNext || !studyMode) return;
+        
+        const currentTopic = studyMode.topics[currentCardIndex];
+        const newRevealedState = !revealed;
+        
+        setRevealed(newRevealedState);
+        
+        if (newRevealedState) {
+            setCardStep('assess');
+            setSrAnnouncement(`Đáp án: ${currentTopic.answer}`);
+        } else {
+            setCardStep('front'); 
+            setSrAnnouncement(`Câu hỏi: ${currentTopic.question}`);
+        }
+        
+        setCardAnimationClass('flipping');
+        setTimeout(() => setCardAnimationClass(''), 300);
+    }, [revealed, isAwaitingNext, studyMode, currentCardIndex]);
+
+    const handleConfidenceSelect = useCallback((confidence: string) => {
+        if (isAwaitingNext || !studyMode) return;
+        
+        const isCorrect = confidence === 'green' || confidence === 'yellow';
+        
+        if(isCorrect) {
+            setComboCount(prev => prev + 1);
+            if (comboCount + 1 >= 2) {
+                const bonus = (comboCount + 1) * 2;
+                setComboBonus(bonus);
+                setTotalXP(prev => prev + bonus);
+            }
+        } else {
+            setComboCount(0);
+        }
+
+        if (confidence === 'green') {
+            createConfetti();
+        }
 
         setRevealed(true);
         setSelectedConfidence(confidence);
         setIsAwaitingNext(true);
+        setCardStep('confidence');
 
-        const { subjectId, chapterId, topics } = studyMode;
+        const { subjectId, topics } = studyMode;
         const topic = topics[currentCardIndex];
-        const currentChapterId = studyMode.mode === 'interleaved' || studyMode.mode === 'enhanced' ? topic.chapterId! : chapterId;
+        const currentChapterId = studyMode.mode === 'interleaved' || studyMode.mode === 'enhanced' ? topic.chapterId! : studyMode.chapterId!;
         recordStudy(subjectId, currentChapterId, topic.id, confidence);
+        setSrAnnouncement(`Đã chọn ${confidenceLevels.find(c => c.value === confidence)?.label}.`);
 
-        timeoutRef.current = window.setTimeout(goToNextCard, 4000); // 4 second delay
-    };
+        if (studySessionStats) {
+            const cardResponseTime = (Date.now() - (studySessionStats.startTime + studySessionStats.duration * 1000)) / 1000;
+            const newCards = [...studySessionStats.cards, { confidence, responseTime: cardResponseTime }];
+
+            if (newCards.length >= 5) {
+                const last5Cards = newCards.slice(-5);
+                const incorrectCount = last5Cards.filter(c => c.confidence === 'red' || c.confidence === 'orange').length;
+                if (incorrectCount >= 4) {
+                    setShowBurnoutIntervention(true);
+                     addAIDecisionLog(
+                        'Phát hiện Burnout',
+                        `${incorrectCount}/5 câu trả lời gần nhất có độ tự tin thấp.`,
+                        'Hiển thị gợi ý nghỉ ngơi.',
+                        AlertTriangle
+                    );
+                }
+            }
+
+            setStudySessionStats(prev => prev ? {
+                ...prev,
+                cards: newCards,
+                duration: (Date.now() - prev.startTime) / 1000
+            } : null);
+        }
+
+        const exitClass = `card-exit-${confidence}`;
+        setCardAnimationClass(exitClass);
+
+        timeoutRef.current = window.setTimeout(() => {
+            goToNextCard();
+        }, 800);
+    }, [isAwaitingNext, studyMode, comboCount, goToNextCard, studySessionStats, confidenceLevels]);
+
 
     const startPracticeTest = (subjectId: number, chapterId: number, e: React.MouseEvent) => {
         e.stopPropagation();
         const subject = subjects.find(s => s.id === subjectId);
         const chapter = subject?.chapters.find(c => c.id === chapterId);
         if (!chapter || chapter.topics.length === 0) {
-            alert('Chương này không có câu hỏi nào để kiểm tra.');
+            showToast('Chương này không có câu hỏi để kiểm tra.', 'warning');
             return;
         }
         setPracticeTestMode({ subjectId, chapterId, topics: [...chapter.topics].sort(() => Math.random() - 0.5) });
@@ -1292,7 +1586,7 @@ const App = () => {
         const subject = subjects.find(s => s.id === subjectId);
         const chapter = subject?.chapters.find(c => c.id === chapterId);
         if (!chapter?.topics || chapter.topics.length === 0) {
-            alert('Chương này không có câu hỏi để chơi.');
+            showToast('Chương này không có câu hỏi để chơi.', 'warning');
             return;
         }
 
@@ -1303,7 +1597,7 @@ const App = () => {
             .slice(0, 10); // Max 10 questions per session
 
         if (questions.length === 0) {
-            alert('Không thể tạo câu hỏi điền vào chỗ trống từ chương này.');
+            showToast('Không thể tạo câu hỏi điền vào chỗ trống.', 'warning');
             return;
         }
 
@@ -1339,7 +1633,7 @@ const App = () => {
                 setFillBlanksAnswer('');
                 setFillBlanksStatus('idle');
             } else {
-                alert(`Trò chơi kết thúc! Điểm của bạn: ${fillBlanksMode.score + (isCorrect ? 1 : 0)}/${fillBlanksMode.questions.length}`);
+                showToast(`Trò chơi kết thúc! Điểm: ${fillBlanksMode.score + (isCorrect ? 1 : 0)}/${fillBlanksMode.questions.length}`, 'info');
                 exitFillBlanksMode();
             }
         }, 2000);
@@ -1424,55 +1718,46 @@ const App = () => {
             timestamp: new Date()
         };
 
-        setChatMessages(prev => [...prev, newUserMessage]);
+        const currentMessages = [...chatMessages, newUserMessage];
+        setChatMessages(currentMessages);
         setUserMessage('');
         setIsChatLoading(true);
 
         try {
             const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
-            const totalQuestions = subjects.reduce((sum, s) => sum + s.chapters.reduce((cSum, c) => cSum + c.topics.length, 0), 0);
             const userContext = `
-# AI LEARNING COACH - SYSTEM INSTRUCTIONS
+# SYSTEM INSTRUCTIONS: SOCRATIC TUTOR AI
 
-## 🎯 VAI TRÒ & NHIỆM VỤ
-Bạn là AI Coach Học Tập Thông Minh, chuyên gia về khoa học học tập (Learning Science). 
-Nhiệm vụ của bạn là hướng dẫn, động viên và thử thách người dùng để họ hiểu sâu kiến thức, không chỉ là học thuộc.
+## 🎯 YOUR ROLE
+You are an expert Socratic tutor and learning scientist. Your goal is NOT to give answers, but to guide the user to discover the answers themselves through critical thinking. You must be encouraging, patient, and curious.
 
-## 📐 NGUYÊN TẮC CỐT LÕI
-1.  **Động Lực Nội Tại:** Khen "quá trình tư duy" ("Cách bạn phân tích từng bước rất logic"), không khen chung chung ("Giỏi lắm!"). Kết nối việc học với mục tiêu cá nhân của người dùng.
-2.  **Metacognition (Nhận thức về nhận thức):** Luôn hỏi "Tại sao bạn nghĩ vậy?" sau mỗi câu trả lời. KHÔNG BAO GIỜ đưa ra đáp án trực tiếp. Thay vào đó, hãy dùng câu hỏi gợi mở để người dùng tự tìm ra lỗi sai.
-3.  **Desirable Difficulty (Độ khó vừa phải):** Giữ cho các câu hỏi ở mức "vất vả nhưng làm được". Nếu người dùng trả lời đúng dễ dàng, hãy hỏi câu hỏi sâu hơn để kiểm tra mức độ hiểu.
+## 📝 CORE PRINCIPLES
+1.  **NEVER Give Direct Answers:** When asked a question, respond with a clarifying or guiding question.
+2.  **Probe for Understanding:** Always ask "Why do you think that?" or "Can you explain your reasoning?" to uncover the user's thought process.
+3.  **Use Analogies & Examples:** If the user is stuck, provide a simple analogy or a concrete example to reframe the problem.
+4.  **Embrace "I Don't Know":** If the user says they don't know, praise their honesty and break the problem down into a smaller, more manageable first step.
+5.  **Identify Misconceptions:** Gently challenge incorrect assumptions. Instead of saying "You're wrong," say "That's an interesting way to look at it. What if we considered this factor...?"
+6.  **Praise the Process, Not Just the Answer:** Compliment their thinking, e.g., "I like how you connected those two ideas," or "That's a great question to ask."
 
-## 🎨 RESPONSE FORMAT (Cách Trả Lời)
+## 💬 CONVERSATION FLOW
+- **If User Asks a Factual Question (e.g., "What is photosynthesis?"):**
+  - **DON'T:** Define photosynthesis.
+  - **DO:** Ask a leading question. "Great question! Let's start with the basics. What do you think plants need to live, just like humans need food?"
+- **If User Gives a Correct Answer:**
+  - **DON'T:** Say "Correct!" and move on.
+  - **DO:** Deepen their understanding. "Exactly! Now, can you explain *why* that happens? What's the mechanism behind it?" or "Excellent. Can you think of a real-world example of that?"
+- **If User Gives an Incorrect Answer:**
+  - **DON'T:** Say "That's wrong. The correct answer is..."
+  - **DO:** Find the logical flaw and probe it. "I see your logic. You connected X and Y. But what about Z? How does that fit into your explanation?"
 
-### Khi Học Sinh Trả Lời SAI:
-1.  **Tìm phần TỐT:** "Hmm, cách tiếp cận của bạn ở [phần A] rất logic!"
-2.  **Chỉ ra phần CẦN ĐIỀU CHỈNH (không nói 'sai'):** "Tuy nhiên, ở [phần B] có vẻ cần xem xét thêm..."
-3.  **Gợi ý HƯỚNG SUY NGHĨ (không cho đáp án):** "Thử nghĩ lại xem: Nếu [điều kiện X] thay đổi, [kết quả Y] sẽ ra sao?"
-4.  **Cho thêm cơ hội:** "Hãy thử lại với gợi ý này nhé!"
-
-### Khi Học Sinh Trả Lời ĐÚNG:
-1.  **Xác nhận + Hỏi "Tại sao?":** "Chính xác! Bạn có thể giải thích tại sao [X] lại dẫn đến [Y] không?"
-2.  **Yêu cầu ví dụ thực tế:** "Tuyệt! Bạn có thể cho 1 ví dụ trong đời sống về [khái niệm này]?"
-3.  **Kiểm tra transfer (chuyển hóa):** "Nếu thay đổi [điều kiện], kết quả sẽ thế nào?"
-
-### Khi Giải Thích Khái Niệm Mới (Dùng CPA Model):
-1.  **C - CONCRETE (Ví dụ cụ thể trước):** "Hãy tưởng tượng bạn mua táo 5k/quả..."
-2.  **P - PRINCIPLE (Nguyên lý sau):** "Hàm số là một quy tắc..."
-3.  **A - APPLICATION (Áp dụng ngay):** "Bây giờ bạn thử tính..."
-
-## 🎭 TONE & PERSONALITY
-- **Như người bạn học:** Dùng "mình/bạn", thân thiện, khuyến khích.
-- **Growth Mindset:** "Chưa hiểu là bình thường, đó là dấu hiệu não đang tạo kết nối mới".
-- **Không phán xét.**
+## 📚 CURRENT LEARNING CONTEXT
+- **Subjects:** ${subjects.map(s => s.name).join(', ') || 'None yet'}
+- **Current Level:** ${level}, XP: ${totalXP}, Streak: ${currentStreak} days
+- **Recent Chat History:**
+${currentMessages.slice(-5).map(m => `${m.role === 'user' ? 'USER' : 'AI'}: ${m.content}`).join('\n')}
 
 ---
-## NGỮ CẢNH HỌC TẬP HIỆN TẠI CỦA TÔI:
-- Môn học: ${subjects.map(s => s.name).join(', ') || 'Chưa có'}
-- Level: ${level}, XP: ${totalXP}, Streak: ${currentStreak} ngày
-- Tổng số câu hỏi đã tạo: ${totalQuestions}
-
-## CÂU HỎI CỦA TÔI: 
+**USER'S LATEST MESSAGE:**
 ${userMessage}
 `;
 
@@ -1568,8 +1853,185 @@ ${userMessage}
         { id: 'evaluation', label: 'Đánh giá' },
     ];
 
+    // Quiz Handlers
+    const handleCreateQuiz = (config: QuizConfig) => {
+        if (!quizEngine) {
+            showToast('Quiz engine chưa sẵn sàng', 'error');
+            return;
+        }
+        try {
+            const session = quizEngine.createQuiz(config);
+            setQuizSession(session);
+            setQuizConfigurator(false);
+            setQuizResult(null);
+        } catch (error) {
+            console.error('Error creating quiz:', error);
+            showToast('Có lỗi xảy ra khi tạo quiz. Vui lòng thử lại.', 'error');
+        }
+    };
+
+    const handleQuizAnswer = (questionId: string, answer: string, timeSpent: number) => {
+        if (!quizSession || !quizEngine) return;
+
+        try {
+            quizEngine.submitAnswer(quizSession.id, questionId, answer, timeSpent);
+            
+            const updatedEngineSession = quizEngine.getSession(quizSession.id);
+            if (!updatedEngineSession) return;
+
+            if (updatedEngineSession.currentQuestionIndex < updatedEngineSession.questions.length - 1) {
+                const nextSessionState = {
+                    ...updatedEngineSession,
+                    currentQuestionIndex: updatedEngineSession.currentQuestionIndex + 1
+                };
+                setQuizSession(nextSessionState);
+            } else {
+                handleCompleteQuiz();
+            }
+        } catch (error) {
+            console.error('Error submitting answer:', error);
+        }
+    };
+
+    const handleCompleteQuiz = () => {
+        if (!quizSession || !quizEngine) return;
+        try {
+            const result = quizEngine.completeQuiz(quizSession.id);
+            setQuizResult(result);
+            setQuizSession(null);
+            
+            setTotalXP(prev => prev + Math.floor(result.totalScore / 2));
+            updateStreak();
+            checkAndAwardBadges({ type: 'quiz', score: result.accuracy / 100 });
+        } catch (error) {
+            console.error('Error completing quiz:', error);
+        }
+    };
+
+    const performBiasCheck = async () => {
+        setIsCheckingBias(true);
+        setBiasCheckResult(null);
+        try {
+            const allTopics = subjects.flatMap(s => s.chapters.flatMap(c => c.topics)).filter(t => t.isAI);
+            if (allTopics.length < 10) {
+                setBiasCheckResult("Không đủ câu hỏi do AI tạo ra (cần ít nhất 10) để thực hiện kiểm tra thiên vị có ý nghĩa.");
+                return;
+            }
+
+            const sample = allTopics.sort(() => 0.5 - Math.random()).slice(0, 20);
+            const questionsText = sample.map((t, i) => `${i + 1}. ${t.question}`).join('\n');
+
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
+            const prompt = `Bạn là một chuyên gia về đạo đức AI. Hãy phân tích danh sách câu hỏi sau đây để tìm kiếm các dấu hiệu thiên vị (bias) tiềm ẩn, bao gồm thiên vị về giới tính, văn hóa, hoặc các định kiến tiêu cực khác.
+            
+            DANH SÁCH CÂU HỎI:
+            ${questionsText}
+            
+            Hãy đưa ra một bản tóm tắt ngắn gọn về kết quả phân tích của bạn. Nếu không tìm thấy vấn đề gì đáng kể, hãy nêu rõ điều đó.`;
+
+            const response = await ai.models.generateContent({ model: "gemini-2.5-flash", contents: prompt });
+            setBiasCheckResult(response.text);
+
+        } catch (e) {
+            setBiasCheckResult("Đã xảy ra lỗi khi thực hiện kiểm tra thiên vị.");
+        } finally {
+            setIsCheckingBias(false);
+        }
+    };
+
+    useEffect(() => {
+        const handleKeyDown = (e: KeyboardEvent) => {
+          if (!studyMode) return;
+          
+          switch(e.code) {
+            case 'Space':
+              e.preventDefault();
+              if (!revealed) {
+                flipCard();
+              }
+              break;
+            case 'Escape':
+              exitStudyMode();
+              break;
+            case 'ArrowLeft':
+              if (currentCardIndex > 0) goToPreviousCard();
+              break;
+            case 'ArrowRight':
+              if (revealed) goToNextCard();
+              break;
+            case 'Digit1':
+              if (revealed) handleConfidenceSelect('red');
+              break;
+            case 'Digit2':
+              if (revealed) handleConfidenceSelect('orange');
+              break;
+            case 'Digit3':
+              if (revealed) handleConfidenceSelect('yellow');
+              break;
+            case 'Digit4':
+              if (revealed) handleConfidenceSelect('green');
+              break;
+            case 'KeyH':
+              e.preventDefault();
+              if (!revealed) {
+                const hintButton = document.querySelector('[title="Gợi ý"]');
+                if (hintButton) (hintButton as HTMLElement).click();
+              }
+              break;
+            case 'KeyR':
+              e.preventDefault();
+              const resetButton = document.querySelector('[title="Đặt lại"]');
+              if (resetButton) (resetButton as HTMLElement).click();
+              break;
+          }
+        };
+      
+        document.addEventListener('keydown', handleKeyDown);
+        return () => document.removeEventListener('keydown', handleKeyDown);
+    }, [studyMode, revealed, currentCardIndex, flipCard, exitStudyMode, goToPreviousCard, goToNextCard, handleConfidenceSelect]);
+
 
     // RENDER LOGIC
+    if (quizSession) {
+        return (
+            <EnhancedQuizSession
+                session={quizSession}
+                onAnswer={handleQuizAnswer}
+                onComplete={handleCompleteQuiz}
+                onExit={() => setQuizSession(null)}
+                darkMode={darkMode}
+            />
+        );
+    }
+
+    if (quizResult) {
+        return (
+            <AdvancedQuizResults
+                result={quizResult}
+                onRetry={() => {
+                    if (!quizEngine) return;
+                    try {
+                        const newSession = quizEngine.createQuiz(quizResult.session.config);
+                        setQuizSession(newSession);
+                        setQuizResult(null);
+                    } catch (error) {
+                        console.error('Error retrying quiz:', error);
+                    }
+                }}
+                onReview={() => {
+                    setQuizResult(null);
+                    alert('Chức năng xem lại chi tiết đang được phát triển');
+                }}
+                onNewQuiz={() => {
+                    setQuizConfigurator(true);
+                    setQuizResult(null);
+                }}
+                darkMode={darkMode}
+            />
+        );
+    }
+
+
     if (fillBlanksMode) {
         const currentQuestion = fillBlanksMode.questions[fillBlanksMode.currentIndex];
         const progress = ((fillBlanksMode.currentIndex + 1) / fillBlanksMode.questions.length) * 100;
@@ -1582,7 +2044,7 @@ ${userMessage}
         }
 
         return (
-            <div className={`min-h-screen ${darkMode ? 'bg-gray-900 text-white' : 'bg-gradient-to-br from-blue-50 to-indigo-100'} p-6 flex items-center justify-center`}>
+            <div className={`min-h-screen ${darkMode ? 'bg-gray-900 text-white' : 'bg-gradient-to-br from-blue-50 to-indigo-100 text-gray-800'} p-6 flex items-center justify-center`}>
                 <div className="w-full max-w-2xl">
                     <div className={`mb-6 ${darkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg p-4 shadow-lg`}>
                         <div className="flex justify-between items-center mb-3">
@@ -1603,7 +2065,16 @@ ${userMessage}
                     <div className={`p-8 rounded-2xl shadow-xl min-h-[16rem] flex flex-col justify-center text-center ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
                         <p className="text-sm uppercase text-gray-500 mb-2">Gợi ý:</p>
                         <p className="text-lg font-semibold mb-6">{currentQuestion.questionWithContext}</p>
-                        <p className="text-2xl" dangerouslySetInnerHTML={{ __html: currentQuestion.blankedAnswer.replace('[___]', '<span class="font-bold text-indigo-500">[___]</span>') }} />
+                        <p className="text-2xl">
+                          {currentQuestion.blankedAnswer.split('[___]').map((part: string, index: number, array: string[]) => (
+                            <React.Fragment key={index}>
+                              {part}
+                              {index < array.length - 1 && (
+                                <span className="font-bold text-indigo-500">[___]</span>
+                              )}
+                            </React.Fragment>
+                          ))}
+                        </p>
                     </div>
                     
                     <form onSubmit={handleFillBlanksSubmit} className="mt-8">
@@ -1636,82 +2107,68 @@ ${userMessage}
     
     if (studyMode) {
         const currentTopic = studyMode.topics[currentCardIndex];
-        const subject = subjects.find(s => s.id === studyMode.subjectId);
-        const progress = ((currentCardIndex + 1) / studyMode.topics.length) * 100;
-
+        
         return (
-            <div className={`min-h-screen ${darkMode ? 'bg-gray-900 text-white' : 'bg-gradient-to-br from-blue-50 to-indigo-100'} p-6 flex items-center justify-center`}>
-                <div className="w-full max-w-3xl">
-                    <div className={`mb-6 ${darkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg p-4 shadow-lg`}>
-                        <div className="flex justify-between items-center mb-3">
-                            <h2 className="text-2xl font-bold">{subject?.name}</h2>
-                            <div className="flex items-center gap-2">
-                                <span className={`px-2 py-1 rounded text-sm ${studyMode.mode === 'review' ? 'bg-yellow-500 text-white' : studyMode.mode === 'interleaved' ? 'bg-purple-500 text-white' : 'bg-indigo-500 text-white'}`}>
-                                    {studyMode.mode === 'review' ? '🔄 Ôn Tập' : studyMode.mode === 'interleaved' ? '🔀 Tổng Hợp' : studyMode.mode === 'enhanced' ? `🚀 ${studyMode.enhancedType}` : '📚 Học Mới'}
-                                </span>
-                                <button onClick={exitStudyMode} className={`${darkMode ? 'text-gray-400 hover:text-white' : 'text-red-600 hover:text-red-800'}`}>
-                                    <X size={28} />
-                                </button>
-                            </div>
-                        </div>
-                        <div className="w-full bg-gray-200 rounded-full h-3">
-                            <div className="bg-indigo-600 h-full rounded-full transition-all" style={{ width: progress + '%' }}></div>
-                        </div>
-                        <p className="text-sm text-gray-500 mt-2">Câu {currentCardIndex + 1} / {studyMode.topics.length}</p>
-                    </div>
-
-                    <div
-                        className={`mb-8 p-12 rounded-2xl shadow-2xl min-h-[24rem] flex items-center justify-center transition ${revealed
-                                ? `${darkMode ? 'bg-gradient-to-br from-green-900 to-green-800 border-green-600' : 'bg-gradient-to-br from-green-100 to-green-50 border-4 border-green-400'}`
-                                : `${darkMode ? 'bg-gradient-to-br from-blue-900 to-indigo-900 border-indigo-600 text-white' : 'bg-gradient-to-br from-blue-600 to-indigo-700 border-4 border-indigo-800 text-white'}`
-                            }`}
+          <div className={`min-h-screen ${darkMode ? 'bg-gray-900 text-white' : 'bg-gradient-to-br from-blue-50 to-indigo-100 text-gray-800'} p-4 flex items-center justify-center relative`}>
+            
+            {/* Burnout Intervention Modal */}
+            {showBurnoutIntervention && (
+              <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
+                <div className={`${darkMode ? 'bg-gray-800' : 'bg-white'} rounded-2xl max-w-md w-full p-8 shadow-2xl text-center`}>
+                  <div className="text-5xl mb-4">🧠</div>
+                  <h3 className="text-2xl font-bold mb-2">Có vẻ bạn đang hơi mệt!</h3>
+                  <p className={`${darkMode ? 'text-gray-300' : 'text-gray-600'} mb-6`}>
+                    Nghỉ ngơi một chút sẽ giúp não bộ củng cố kiến thức tốt hơn. Bạn có muốn tạm dừng buổi học này không?
+                  </p>
+                  <div className="flex gap-4">
+                    <button 
+                      onClick={() => setShowBurnoutIntervention(false)} 
+                      className={`flex-1 py-3 rounded-lg font-semibold transition ${darkMode ? 'bg-gray-600 hover:bg-gray-500' : 'bg-gray-200 hover:bg-gray-300'}`}
                     >
-                        <div className="text-center w-full px-6">
-                            <p className="text-sm uppercase opacity-75 mb-6">{revealed ? 'Trả Lời' : 'Câu Hỏi'}</p>
-                            <p className="text-3xl font-bold">{revealed ? currentTopic.answer : currentTopic.question}</p>
-                            {currentTopic.isAI && (
-                                <p className={`mt-4 text-sm opacity-75 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>🤖 Được tạo bởi AI</p>
-                            )}
-                            <p className="mt-8 text-sm opacity-75">{revealed ? 'So sánh với câu trả lời của bạn.' : 'Tự trả lời câu hỏi, sau đó chọn mức độ tự tin của bạn.'}</p>
-                        </div>
-                    </div>
-
-                    <div className="h-36 flex items-center justify-center">
-                        {isAwaitingNext ? (
-                            <div className="flex justify-center">
-                                <button
-                                    onClick={goToNextCard}
-                                    className={`inline-flex items-center gap-3 px-10 py-4 rounded-lg font-bold text-lg transition shadow-xl transform hover:scale-105 ${
-                                        darkMode
-                                        ? 'bg-indigo-600 hover:bg-indigo-500 text-white'
-                                        : 'bg-indigo-600 hover:bg-indigo-700 text-white'
-                                    } focus:outline-none focus:ring-4 focus:ring-indigo-400 focus:ring-offset-2 dark:focus:ring-offset-gray-900 animate-pulse`}
-                                >
-                                    Tiếp theo <ChevronRight size={24} />
-                                </button>
-                            </div>
-                        ) : (
-                            <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 w-full">
-                                {confidenceLevels.map((level) => {
-                                    const isSelected = selectedConfidence === level.value;
-                                    return (
-                                        <button
-                                            key={level.value}
-                                            onClick={() => handleConfidenceSelect(level.value)}
-                                            disabled={isAwaitingNext}
-                                            className={`p-4 rounded-lg font-bold text-lg transition ${level.color} flex flex-col items-center justify-center space-y-2 h-32 hover:scale-105 transform ${isAwaitingNext ? 'cursor-not-allowed opacity-50' : ''} ${isSelected ? 'ring-4 ring-offset-2 ring-indigo-500 dark:ring-offset-gray-900' : ''}`}
-                                        >
-                                            <span className="text-4xl">{level.emoji}</span>
-                                            <span>{level.label}</span>
-                                            <span className="text-xs opacity-80">+{level.xp} XP</span>
-                                        </button>
-                                    );
-                                })}
-                            </div>
-                        )}
-                    </div>
+                      Học tiếp
+                    </button>
+                    <button 
+                      onClick={() => { setShowBurnoutIntervention(false); exitStudyMode(); }} 
+                      className="flex-1 bg-blue-500 hover:bg-blue-600 text-white py-3 rounded-lg font-semibold transition"
+                    >
+                      Nghỉ ngơi
+                    </button>
+                  </div>
                 </div>
+              </div>
+            )}
+      
+            {/* Combo System */}
+            <div className={`combo-system fixed top-4 left-4 z-10 ${comboCount >= 2 ? 'opacity-100 scale-100' : 'opacity-0 scale-50'} transition-all duration-300`}>
+              <div className="combo-display bg-gradient-to-r from-orange-500 to-red-500 text-white px-4 py-2 rounded-full font-bold flex items-center gap-2 shadow-lg">
+                <span className="text-xl">🔥</span>
+                <span>x{comboCount}</span>
+              </div>
+              {comboBonus > 0 && (
+                <div className="combo-multiplier absolute -top-8 left-1/2 transform -translate-x-1/2 bg-yellow-500 text-black px-2 py-1 rounded text-sm font-bold animate-bounce">
+                  +{comboBonus} XP
+                </div>
+              )}
             </div>
+      
+            {/* Modern Flashcard Component */}
+            <ModernFlashcard
+              question={currentTopic.question}
+              answer={currentTopic.answer}
+              revealed={revealed}
+              onReveal={flipCard}
+              onNext={goToNextCard}
+              onPrevious={goToPreviousCard}
+              onExit={exitStudyMode}
+              currentIndex={currentCardIndex}
+              totalCards={studyMode.topics.length}
+              darkMode={darkMode}
+              onConfidenceSelect={handleConfidenceSelect}
+              isAI={currentTopic.isAI}
+              difficulty={currentTopic.difficulty as string}
+              type={currentTopic.type as string}
+            />
+          </div>
         );
     }
 
@@ -1722,7 +2179,7 @@ ${userMessage}
         const progress = ((currentCardIndex + 1) / practiceTestMode.topics.length) * 100;
 
         return (
-            <div className={`min-h-screen ${darkMode ? 'bg-gray-900 text-white' : 'bg-gradient-to-br from-blue-50 to-indigo-100'} p-6 flex items-center justify-center`}>
+            <div className={`min-h-screen ${darkMode ? 'bg-gray-900 text-white' : 'bg-gradient-to-br from-blue-50 to-indigo-100 text-gray-800'} p-6 flex items-center justify-center`}>
                 <div className="w-full max-w-3xl">
                     <div className={`mb-6 ${darkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg p-4 shadow-lg`}>
                         <div className="flex justify-between items-center mb-3">
@@ -1748,7 +2205,7 @@ ${userMessage}
                     </div>
                     <div className="grid grid-cols-2 gap-3">
                         {confidenceLevels.map((level) => (
-                            <button key={level.value} onClick={() => handlePracticeTestAnswer(level.value)} className={`px-6 py-4 rounded-lg font-bold text-lg transition ${level.color}`}>
+                            <button key={level.value} onClick={() => handlePracticeTestAnswer(level.value)} className={`px-6 py-4 rounded-lg font-bold text-lg transition confidence-btn ${level.className}`}>
                                 {level.emoji} {level.label}
                             </button>
                         ))}
@@ -1763,7 +2220,7 @@ ${userMessage}
         const chapter = subject?.chapters.find(c => c.id === practiceTestSummary.chapterId);
 
         return (
-            <div className={`min-h-screen ${darkMode ? 'bg-gray-900 text-white' : 'bg-gradient-to-br from-blue-50 to-indigo-100'} p-6`}>
+            <div className={`min-h-screen ${darkMode ? 'bg-gray-900 text-white' : 'bg-gradient-to-br from-blue-50 to-indigo-100 text-gray-800'} p-6`}>
                 <div className={`w-full max-w-4xl mx-auto ${darkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg shadow-lg p-8`}>
                     <div className="flex justify-between items-center mb-6">
                         <h2 className="text-3xl font-bold">Kết Quả Kiểm Tra: {chapter?.name}</h2>
@@ -1781,7 +2238,7 @@ ${userMessage}
                                     <p className={`mt-2 p-2 rounded ${darkMode ? 'bg-green-900 text-green-200' : 'bg-green-100 text-green-800'}`}>
                                         <strong>Đáp án:</strong> {topic.answer}
                                     </p>
-                                    <p className={`mt-2 text-sm p-2 rounded inline-block ${confidence?.color}`}>
+                                    <p className={`mt-2 text-sm p-2 rounded inline-block ${confidence?.className}`}>
                                         <strong>Bạn đã chọn:</strong> {confidence?.emoji} {confidence?.label}
                                     </p>
                                 </div>
@@ -1794,7 +2251,15 @@ ${userMessage}
     }
 
     return (
-        <div className={`min-h-screen ${darkMode ? 'bg-gray-900 text-white' : 'bg-gradient-to-br from-blue-50 to-indigo-100'} pb-24`}>
+        <div className={`min-h-screen ${darkMode ? 'bg-gray-900 text-white' : 'bg-gradient-to-br from-blue-50 to-indigo-100 text-gray-800'} pb-24`}>
+            {quizConfigurator && (
+                <QuizConfigurator
+                    subjects={subjects}
+                    onCreateQuiz={handleCreateQuiz}
+                    onClose={() => setQuizConfigurator(false)}
+                    darkMode={darkMode}
+                />
+            )}
             {openEndedMode && (
                 <OpenEndedMode
                     subject={openEndedMode.subject}
@@ -1817,6 +2282,7 @@ ${userMessage}
                     subjects={subjects}
                     darkMode={darkMode}
                     onClose={() => setShowCalendarView(false)}
+                    getWeakestTopics={getWeakestTopics}
                 />
             )}
 
@@ -1836,6 +2302,15 @@ ${userMessage}
                   />
                 </div>
               </div>
+            )}
+             
+            {showPromptManager && (
+                <AIPromptManager
+                    prompts={aiPromptVersions}
+                    setPrompts={setAiPromptVersions}
+                    onClose={() => setShowPromptManager(false)}
+                    darkMode={darkMode}
+                />
             )}
             
             {deleteConfirm.show && (
@@ -1871,21 +2346,28 @@ ${userMessage}
                 </div>
             )}
             
-             {/* Badge Notification */}
-            {badgeNotification && (
-                <div className="fixed bottom-24 right-4 bg-gradient-to-r from-yellow-400 to-orange-500 text-white p-4 rounded-lg shadow-2xl z-50 flex items-center gap-4 animate-bounce">
+             {/* Badge Notifications */}
+            {badgeNotifications.map((badge, index) => (
+                <div 
+                    key={badge.id} 
+                    className="fixed right-4 bg-gradient-to-r from-yellow-400 to-orange-500 text-white p-4 rounded-lg shadow-2xl z-50 flex items-center gap-4 animate-slide-in"
+                    style={{ bottom: `${(index * 5) + 6}rem` }} // 6rem base + 5rem spacing
+                >
                     <div className="bg-white p-2 rounded-full">
-                        <badgeNotification.icon size={24} className="text-orange-500" />
+                        <badge.icon size={24} className="text-orange-500" />
                     </div>
                     <div>
                         <h4 className="font-bold">Huy hiệu mới!</h4>
-                        <p className="text-sm">{badgeNotification.name}</p>
+                        <p className="text-sm">{badge.name}</p>
                     </div>
-                    <button onClick={() => setBadgeNotification(null)} className="absolute top-1 right-1 text-white opacity-70 hover:opacity-100">
+                    <button 
+                        onClick={() => setBadgeNotifications(prev => prev.filter(b => b.id !== badge.id))} 
+                        className="absolute top-1 right-1 text-white opacity-70 hover:opacity-100"
+                    >
                         <X size={16} />
                     </button>
                 </div>
-            )}
+            ))}
             
             {/* AI Chatbot Floating Button */}
             {!showAIChatbot && (
@@ -1903,7 +2385,7 @@ ${userMessage}
 
             {/* AI Chatbot Modal */}
             {showAIChatbot && (
-                <div className={`fixed bottom-4 right-4 w-96 h-[500px] ${darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-300'} border rounded-2xl shadow-2xl z-50 flex flex-col`}>
+                <div className={`fixed bottom-4 right-4 w-96 h-[500px] ${darkMode ? 'bg-gray-800 border-gray-700 text-gray-100' : 'bg-white border-gray-300 text-gray-800'} border rounded-2xl shadow-2xl z-50 flex flex-col`}>
                 {/* Header */}
                 <div className="bg-gradient-to-r from-purple-500 to-pink-500 text-white p-3 rounded-t-2xl flex justify-between items-center">
                     <div className="flex items-center gap-2">
@@ -2058,6 +2540,18 @@ ${userMessage}
                                     </div>
                                 </div>
                             </div>
+                            <div className="border-t pt-6 mt-6 border-gray-200 dark:border-gray-700">
+                                <h3 className="font-bold mb-4 text-lg">🛡️ Đạo đức & An toàn AI</h3>
+                                <button onClick={performBiasCheck} disabled={isCheckingBias} className="w-full bg-blue-500 hover:bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold flex items-center justify-center gap-2">
+                                    {isCheckingBias ? <><RefreshCw size={16} className="animate-spin" /> Đang kiểm tra...</> : <><ShieldCheck size={16} /> Kiểm tra Thiên vị AI</>}
+                                </button>
+                                {biasCheckResult && (
+                                    <div className={`mt-4 p-3 rounded-lg text-sm ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                                        <h4 className="font-semibold mb-2">Kết quả kiểm tra:</h4>
+                                        <p className="whitespace-pre-wrap">{biasCheckResult}</p>
+                                    </div>
+                                )}
+                            </div>
                         </div>
                     </div>
                 </div>
@@ -2131,7 +2625,7 @@ ${userMessage}
                         <div className="grid grid-cols-2 gap-4 mb-6">
                             <div className={`${darkMode ? 'bg-indigo-900' : 'bg-indigo-100'} p-4 rounded-lg`}>
                                 <p className={`${darkMode ? 'text-indigo-300' : 'text-gray-600'} text-sm`}>Tổng câu hỏi</p>
-                                <p className={`text-3xl font-bold ${darkMode ? 'text-indigo-400' : 'text-indigo-700'}`}>{subjects.reduce((sum, s) => sum + s.chapters.reduce((cSum, c) => cSum + c.topics.length, 0), 0)}</p>
+                                <p className={`text-3xl font-bold ${darkMode ? 'text-indigo-400' : 'text-indigo-700'}`}>{totalTopics}</p>
                             </div>
                             <div className={`${darkMode ? 'bg-green-900' : 'bg-green-100'} p-4 rounded-lg`}>
                                 <p className={`${darkMode ? 'text-green-300' : 'text-gray-600'} text-sm`}>Level</p>
@@ -2164,6 +2658,61 @@ ${userMessage}
                             </div>
                         </div>
                         <LeitnerBoxVisualization subjects={subjects} darkMode={darkMode} />
+                        
+                        <div className={`mt-6 p-4 rounded-lg ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                            <h4 className="font-bold mb-3">So sánh với cộng đồng (ẩn danh)</h4>
+                            <div className="space-y-3">
+                                <div className="community-benchmark-item">
+                                    <span className="text-sm font-medium">Tốc độ học</span>
+                                    <div className="benchmark-progress-bar">
+                                        <div className="benchmark-progress-fill" style={{ width: '65%' }}></div>
+                                        <div className="benchmark-compare-marker" style={{ left: '50%' }} title="Trung bình cộng đồng"></div>
+                                    </div>
+                                    <span className="text-sm font-bold text-green-500">Nhanh hơn 15%</span>
+                                </div>
+                                <div className="community-benchmark-item">
+                                    <span className="text-sm font-medium">Độ khó ưa thích</span>
+                                    <div className="flex-1 text-center">
+                                        <span className="px-2 py-1 text-xs font-semibold rounded-full bg-red-100 text-red-800 dark:bg-red-900 dark:text-red-300">Khó</span>
+                                    </div>
+                                    <span className="text-sm font-bold text-blue-500">Top 20%</span>
+                                </div>
+                            </div>
+                        </div>
+
+                          <div className={`leaderboard-section ${darkMode ? 'dark' : ''}`}>
+                            <h3 className="text-xl font-bold mb-4">🏆 Bảng xếp hạng tuần</h3>
+                            <div className="space-y-2">
+                                {mockLeaderboard.map(item => (
+                                    <div key={item.rank} className="leaderboard-item">
+                                        <div className="leaderboard-rank">{item.rank}</div>
+                                        <div className="leaderboard-user">
+                                            <div className="leaderboard-avatar">{item.avatar}</div>
+                                            <div>
+                                                <div className="leaderboard-username">{item.username}</div>
+                                                <div className="leaderboard-xp">{item.xp.toLocaleString()} XP</div>
+                                            </div>
+                                        </div>
+                                        <div className="leaderboard-badges">
+                                            {item.badges.map((badge, i) => <span key={i} className="leaderboard-badge">{badge}</span>)}
+                                        </div>
+                                    </div>
+                                ))}
+                                <div className="leaderboard-item you">
+                                    <div className="leaderboard-rank">--</div>
+                                    <div className="leaderboard-user">
+                                        <div className="leaderboard-avatar">👤</div>
+                                        <div>
+                                            <div className="leaderboard-username">Bạn</div>
+                                            <div className="leaderboard-xp">{totalXP.toLocaleString()} XP</div>
+                                        </div>
+                                    </div>
+                                    <div className="leaderboard-badges">
+                                        <span className="leaderboard-badge">🔥 {currentStreak}</span>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
             )}
@@ -2210,6 +2759,49 @@ ${userMessage}
                     </div>
                 </div>
             )}
+            
+            {showAIDecisionLog && (
+                 <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
+                    <div className={`${darkMode ? 'bg-gray-800' : 'bg-white'} rounded-2xl max-w-2xl w-full max-h-[80vh] p-8 flex flex-col`}>
+                         <div className="flex justify-between items-center mb-6">
+                            <h2 className="text-2xl font-bold flex items-center gap-2"><Eye size={24} /> Nhật ký Quyết định AI</h2>
+                            <button onClick={() => setShowAIDecisionLog(false)} className={`${darkMode ? 'text-gray-400 hover:text-white' : 'text-gray-500 hover:text-gray-700'}`}><X size={28} /></button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto pr-4">
+                        {aiDecisionLog.length > 0 ? (
+                            aiDecisionLog.map(entry => (
+                                <div key={entry.id} className="ai-decision-log-entry">
+                                     <div className={`log-icon ${darkMode ? 'bg-gray-600' : 'bg-gray-200'}`}><entry.icon size={14} className={`${darkMode ? 'text-gray-300' : 'text-gray-600'}`} /></div>
+                                    <time className={`text-xs font-semibold uppercase ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>{entry.timestamp.toLocaleTimeString()}</time>
+                                    <h4 className="font-bold mt-1">{entry.action}</h4>
+                                    <p className={`text-sm mt-1 p-2 rounded ${darkMode ? 'bg-gray-700' : 'bg-gray-100'}`}>
+                                        <strong className="font-semibold">Lý do:</strong> {entry.reason}<br/>
+                                        <strong className="font-semibold">Quyết định:</strong> {entry.decision}
+                                    </p>
+                                </div>
+                            ))
+                        ) : (
+                            <p className="text-center text-gray-500">Chưa có quyết định nào được ghi lại.</p>
+                        )}
+                        </div>
+                    </div>
+                 </div>
+            )}
+
+            {showDiagramAnalysis && (
+                <div className="fixed inset-0 bg-black bg-opacity-60 flex items-center justify-center z-50 p-4">
+                    <div className={`${darkMode ? 'bg-gray-800' : 'bg-white'} rounded-2xl max-w-2xl w-full p-8 text-center`}>
+                        <UploadCloud size={48} className="mx-auto text-blue-500 mb-4" />
+                        <h2 className="text-2xl font-bold mb-2">Phân tích Sơ đồ bằng AI</h2>
+                        <p className={`${darkMode ? 'text-gray-300' : 'text-gray-600'} mb-6`}>
+                            Tính năng này đang được phát triển. Hãy tưởng tượng bạn có thể tải lên một hình ảnh sơ đồ, và AI sẽ tự động xác định các thành phần, giải thích mối quan hệ và tạo câu hỏi ôn tập từ đó!
+                        </p>
+                         <button onClick={() => setShowDiagramAnalysis(false)} className="bg-blue-500 hover:bg-blue-600 text-white px-6 py-2 rounded-lg font-semibold">
+                            Đã hiểu
+                        </button>
+                    </div>
+                </div>
+            )}
 
             {/* Header */}
             <header className={`${darkMode ? 'bg-gray-800' : 'bg-gradient-to-r from-indigo-600 to-indigo-800'} text-white p-6 sticky top-0 z-30 shadow-lg`}>
@@ -2217,15 +2809,35 @@ ${userMessage}
                     <div className="flex justify-between items-center mb-4">
                         <h1 className="text-3xl font-bold flex items-center gap-2"><BrainCircuit /> Cornell Notes Pro</h1>
                         <div className="flex gap-3">
-                            <button onClick={() => setShowCalendarView(true)} className="bg-white bg-opacity-20 hover:bg-opacity-30 p-2 rounded-lg transition"><CalendarDays size={20} /></button>
-                            <button onClick={() => setShowSettings(true)} className="bg-white bg-opacity-20 hover:bg-opacity-30 p-2 rounded-lg transition"><Settings size={20} /></button>
-                            <button onClick={() => setShowStats(true)} className="bg-white bg-opacity-20 hover:bg-opacity-30 p-2 rounded-lg transition"><BarChart3 size={20} /></button>
-                            <button onClick={() => setShowABTesting(true)} className="flex items-center gap-1 bg-white bg-opacity-20 hover:bg-opacity-30 px-3 py-2 rounded-lg transition text-sm">
+                             <button 
+                                onClick={() => setQuizConfigurator(true)}
+                                className="bg-gradient-to-r from-purple-500 to-pink-500 hover:from-purple-600 hover:to-pink-600 text-white px-4 py-2 rounded-lg font-semibold flex items-center gap-2 transition-all transform hover:scale-105"
+                                >
+                                <Target size={18} />
+                                Quiz Nâng Cao
+                            </button>
+                            <div className="relative group">
+                                <button aria-label="Study Themes" title="Study Themes" className="bg-white bg-opacity-20 hover:bg-opacity-30 p-2 rounded-lg transition"><Palette size={20} /></button>
+                                <div className="absolute top-full right-0 mt-2 w-40 bg-white dark:bg-gray-700 rounded-lg shadow-xl p-2 opacity-0 group-hover:opacity-100 transition-opacity pointer-events-none group-hover:pointer-events-auto z-10">
+                                    <button onClick={() => setStudyTheme('default')} className="w-full text-left px-3 py-1.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600 rounded">Default</button>
+                                    <button onClick={() => setStudyTheme('zen')} className="w-full text-left px-3 py-1.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600 rounded">🧘 Zen</button>
+                                    <button onClick={() => setStudyTheme('speed')} className="w-full text-left px-3 py-1.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600 rounded">⚡ Speed</button>
+                                    <button onClick={() => setStudyTheme('night')} className="w-full text-left px-3 py-1.5 text-sm text-gray-700 dark:text-gray-200 hover:bg-gray-100 dark:hover:bg-gray-600 rounded">🌙 Night</button>
+                                </div>
+                            </div>
+                            <button onClick={() => setShowCalendarView(true)} aria-label="Mở lịch ôn tập" title="Lịch ôn tập" className="bg-white bg-opacity-20 hover:bg-opacity-30 p-2 rounded-lg transition"><CalendarDays size={20} /></button>
+                            <button onClick={() => setShowSettings(true)} aria-label="Mở cài đặt" title="Cài đặt" className="bg-white bg-opacity-20 hover:bg-opacity-30 p-2 rounded-lg transition"><Settings size={20} /></button>
+                            <button onClick={() => setShowStats(true)} aria-label="Mở thống kê" title="Thống kê" className="bg-white bg-opacity-20 hover:bg-opacity-30 p-2 rounded-lg transition"><BarChart3 size={20} /></button>
+                            <button onClick={() => setShowAIDecisionLog(true)} aria-label="AI Decision Log" title="AI Decision Log" className="bg-white bg-opacity-20 hover:bg-opacity-30 p-2 rounded-lg transition"><Eye size={20} /></button>
+                            <button onClick={() => setShowPromptManager(true)} aria-label="Manage AI Prompts" title="Manage AI Prompts" className="flex items-center gap-1 bg-white bg-opacity-20 hover:bg-opacity-30 px-3 py-2 rounded-lg transition text-sm">
+                                <Zap size={16} /> Prompts
+                            </button>
+                            <button onClick={() => setShowABTesting(true)} aria-label="Mở bảng điều khiển A/B testing" title="A/B Testing" className="flex items-center gap-1 bg-white bg-opacity-20 hover:bg-opacity-30 px-3 py-2 rounded-lg transition text-sm">
                                 <BarChart3 size={16} /> A/B
                             </button>
-                            <button onClick={() => setShowTechnique(true)} className="bg-white bg-opacity-20 hover:bg-opacity-30 p-2 rounded-lg transition"><BookOpen size={20} /></button>
-                            <button onClick={exportData} className="bg-white bg-opacity-20 hover:bg-opacity-30 p-2 rounded-lg transition"><Download size={20} /></button>
-                            <label className="bg-white bg-opacity-20 hover:bg-opacity-30 p-2 rounded-lg transition cursor-pointer">
+                            <button onClick={() => setShowTechnique(true)} aria-label="Mở hướng dẫn phương pháp học" title="Phương pháp học" className="bg-white bg-opacity-20 hover:bg-opacity-30 p-2 rounded-lg transition"><BookOpen size={20} /></button>
+                            <button onClick={exportData} aria-label="Xuất dữ liệu" title="Xuất dữ liệu" className="bg-white bg-opacity-20 hover:bg-opacity-30 p-2 rounded-lg transition"><Download size={20} /></button>
+                            <label className="bg-white bg-opacity-20 hover:bg-opacity-30 p-2 rounded-lg transition cursor-pointer" aria-label="Nhập dữ liệu" title="Nhập dữ liệu">
                                 <Upload size={20} />
                                 <input type="file" accept=".json" onChange={importData} className="hidden" />
                             </label>
@@ -2248,7 +2860,7 @@ ${userMessage}
 
             {/* Main Content */}
             <main className="max-w-7xl mx-auto p-6">
-                <div className={`${darkMode ? 'bg-gray-800' : 'bg-white'} rounded-2xl shadow-xl p-8 mb-8`}>
+                <div className={`${darkMode ? 'bg-gray-800 text-gray-100' : 'bg-white text-gray-800'} rounded-2xl shadow-xl p-8 mb-8`}>
                     <h2 className="text-2xl font-bold mb-4">➕ Thêm Môn Học Mới</h2>
                     <div className="flex gap-3">
                         <input
@@ -2275,14 +2887,14 @@ ${userMessage}
                         {subjects.map((subject) => {
                             const reviewCount = getDueTopics(subject).length;
                             const totalChapters = subject.chapters?.length || 0;
-                            const totalTopics = subject.chapters?.reduce((sum, ch) => sum + ch.topics.length, 0) || 0;
+                            const totalTopicsInSubject = subject.chapters?.reduce((sum, ch) => sum + ch.topics.length, 0) || 0;
                             const algorithmStats = enhancedSpacedRepetition.getAlgorithmComparison();
                           
                             return (
                                 <div key={subject.id} className={`border-2 ${darkMode ? 'border-gray-700 bg-gray-800' : 'border-gray-200 bg-white'} rounded-xl overflow-hidden hover:shadow-lg transition`}>
                                     <div
                                         onClick={(e) => handleExpandSubject(subject.id, e)}
-                                        className={`${darkMode ? 'bg-gray-700/50 hover:bg-gray-700' : 'bg-gray-50 hover:bg-gray-100'} p-4 cursor-pointer relative group`}
+                                        className={`${darkMode ? 'bg-gray-700/50 hover:bg-gray-700 text-gray-100' : 'bg-gray-50 hover:bg-gray-100 text-gray-800'} p-4 cursor-pointer relative group`}
                                     >
                                         <button
                                           onClick={(e) => confirmDelete('subject', subject, e)}
@@ -2301,7 +2913,7 @@ ${userMessage}
                                                 <div>
                                                     <h3 className="text-lg font-bold">{subject.name}</h3>
                                                     <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>
-                                                        {totalChapters} chương • {totalTopics} câu hỏi
+                                                        {totalChapters} chương • {totalTopicsInSubject} câu hỏi
                                                         {reviewCount > 0 && ` • ${reviewCount} cần ôn`}
                                                     </p>
                                                 </div>
@@ -2465,6 +3077,43 @@ ${userMessage}
                     </div>
                 )}
             </main>
+            {toasts.length > 0 && (
+                <div className="fixed top-20 right-4 z-50 space-y-2">
+                    {toasts.map(toast => (
+                        <div
+                            key={toast.id}
+                            className={`px-4 py-3 rounded-lg shadow-lg flex items-center gap-3 min-w-[250px] animate-slide-in ${
+                                toast.type === 'success' ? 'bg-green-500' :
+                                toast.type === 'error' ? 'bg-red-500' :
+                                toast.type === 'warning' ? 'bg-yellow-500' :
+                                'bg-blue-500'
+                            } text-white`}
+                        >
+                            {toast.type === 'success' && <Check size={20} />}
+                            {toast.type === 'error' && <X size={20} />}
+                            {toast.type === 'warning' && <AlertTriangle size={20} />}
+                            {toast.type === 'info' && <Info size={20} />}
+                            <span className="flex-1">{toast.message}</span>
+                            <button 
+                                onClick={() => setToasts(prev => prev.filter(t => t.id !== toast.id))}
+                                className="hover:opacity-75"
+                            >
+                                <X size={16} />
+                            </button>
+                        </div>
+                    ))}
+                </div>
+            )}
+             {achievementToast && (
+                <div className={`achievement-toast ${achievementToast ? 'show' : ''}`}>
+                    <div className="achievement-icon">{achievementToast.icon}</div>
+                    <div>
+                        <div className="achievement-title">{achievementToast.title}</div>
+                        <div className="achievement-desc">{achievementToast.description}</div>
+                        <div className="achievement-xp">+{achievementToast.xp} XP</div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

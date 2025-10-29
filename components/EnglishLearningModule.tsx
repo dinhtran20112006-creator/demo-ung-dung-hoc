@@ -450,11 +450,14 @@ const EnglishLearningModule: React.FC<EnglishModuleProps> = ({
         setGameLoadingState({ isLoading: true, message: 'Asking AI for a fun challenge...' });
         try {
             const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
-            const config = isJson ? { responseMimeType: "application/json" } : {};
+            const config: any = isJson ? { responseMimeType: "application/json" } : {};
             const response = await ai.models.generateContent({
-                model: "gemini-2.5-flash",
+                model: "gemini-2.5-pro",
                 contents: prompt,
-                config,
+                config: {
+                  ...config,
+                  thinkingConfig: { thinkingBudget: 32768 }
+                },
             });
             const text = response.text.trim();
             return isJson ? JSON.parse(text) : text;
@@ -726,8 +729,32 @@ const EnglishLearningModule: React.FC<EnglishModuleProps> = ({
     }, [guessedLetters, mistakes, view, gameWords, currentGameIndex, nextGameItem]);
     
     // --- Pronunciation & Shadowing Logic ---
+    const analyzePronunciation = async (transcript: string, targetText: string) => {
+        setFeedback('AI is analyzing...');
+        try {
+            const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
+            const prompt = `As an English pronunciation coach, compare the user's speech to the target phrase. Provide concise, helpful feedback.
+            - Target: "${targetText}"
+            - User said: "${transcript}"
+            
+            Analyze for clarity, missed words, or phonetic errors. Keep feedback to 1-2 sentences. Example: "Good attempt! You said 'wery' instead of 'very'. Focus on the 'v' sound."`;
+
+            const response = await ai.models.generateContent({model: "gemini-2.5-flash", contents: prompt});
+            
+            const aiFeedback = response.text;
+            const isCorrect = aiFeedback.toLowerCase().includes("good") || aiFeedback.toLowerCase().includes("excellent");
+            
+            setFeedback(aiFeedback);
+            updateWordProgress(gameWords[currentGameIndex].id, isCorrect ? 4 : 2, selectedList!.id);
+            if (isCorrect) setTotalXP(p => p + 30);
+
+        } catch (error) {
+            console.error("Pronunciation analysis error:", error);
+            setFeedback("Couldn't analyze pronunciation. Please try again.");
+        }
+    };
+
     const setupSpeechRecognition = () => {
-        // FIX: Cast window to `any` to access non-standard SpeechRecognition APIs and prevent TypeScript errors.
         const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
         if (!SpeechRecognition) {
             alert("Speech Recognition is not supported by your browser.");
@@ -743,17 +770,7 @@ const EnglishLearningModule: React.FC<EnglishModuleProps> = ({
             setIsRecording(false);
             
             const targetText = view === 'shadowing' ? gameWords[currentGameIndex].example : gameWords[currentGameIndex].word;
-            
-            // Simple check
-            const isCorrect = transcript.toLowerCase().includes(targetText.toLowerCase().replace(/[.?,!]/g, ''));
-            setFeedback(isCorrect ? "Great job!" : `You said: "${transcript}". Try again!`);
-            
-            if(isCorrect) {
-                setTotalXP(prev => prev + 30);
-                updateWordProgress(gameWords[currentGameIndex].id, 4, selectedList!.id);
-            } else {
-                updateWordProgress(gameWords[currentGameIndex].id, 2, selectedList!.id);
-            }
+            analyzePronunciation(transcript, targetText);
         };
         recognitionRef.current.onerror = (event: any) => {
             console.error("Speech Recognition Error", event.error);
@@ -863,7 +880,8 @@ const EnglishLearningModule: React.FC<EnglishModuleProps> = ({
 
             if (foundWord) {
                 setWordSearchData(prev => {
-                    const newData = { ...prev! };
+                    if (!prev) return null;
+                    const newData = { ...prev };
                     const wordToUpdate = newData.words.find(w => w.word === foundWord.word)!;
                     wordToUpdate.found = true;
                     
@@ -920,356 +938,138 @@ const EnglishLearningModule: React.FC<EnglishModuleProps> = ({
         const prompt = `For each English word: ${words.map(w => `"${w.word}"`).join(', ')}, provide one synonym, one antonym, and two random distractor words. Output ONLY a valid JSON array: [{ "wordId": number, "word": string, "synonym": string, "antonym": string, "distractors": [string, string] }]. Use these IDs: ${words.map(w => w.id).join(', ')}`;
         const data = await generateAIContent(prompt);
         if (data) {
+// FIX: Completed the flatMap function to correctly structure synonym/antonym questions.
             const questions = data.flatMap((item: any) => [
                 { wordId: item.wordId, word: item.word, type: 'synonym', options: shuffleArray([item.synonym, ...item.distractors]), correctAnswer: item.synonym },
                 { wordId: item.wordId, word: item.word, type: 'antonym', options: shuffleArray([item.antonym, ...item.distractors]), correctAnswer: item.antonym }
             ]);
-            setSynonymAntonymData(shuffleArray(questions));
+            setSynonymAntonymData(questions);
         }
     };
 
-    const startCollocations = async (list: VocabularyList) => {
-        const words = setupGame(list, 'collocations');
-        const prompt = `For each English word: ${words.map(w => `"${w.word}"`).join(', ')}, create a fill-in-the-blank sentence that tests a common collocation. Provide 3 incorrect options. Output ONLY a valid JSON array: [{ "wordId": number, "word": string, "sentencePart1": "...", "sentencePart2": "...", "correctAnswer": "collocation word", "options": ["...", "...", "..."] }]. Use these IDs: ${words.map(w => w.id).join(', ')}`;
-        const data = await generateAIContent(prompt);
-        if (data) {
-            const questions = data.map((item: any) => ({
-                ...item,
-                options: shuffleArray([...item.options, item.correctAnswer])
-            }));
-            setCollocationsData(questions);
-        }
-    };
-    
+    // --- Render Logic ---
 
-    // --- AI Generator Logic ---
-    const parseAIVocabularyResponse = (responseText: string) => {
-        let analysis = "AI did not provide an analysis.";
-        const analysisMatch = responseText.match(/\[ANALYSIS\]([\s\S]*?)\[\/ANALYSIS\]/);
-        if (analysisMatch) {
-            analysis = analysisMatch[1].trim();
-        }
-
-        const lines = responseText.split('\n').filter(line => line.trim() && !line.startsWith('[ANALYSIS]') && !line.endsWith('[/ANALYSIS]'));
-        const words: VocabularyWord[] = [];
-        lines.forEach(line => {
-            const parts = line.split('|').map(p => p.trim());
-            if (parts.length === 9) {
-                const [word, meaning, pronunciation, example, translation, partOfSpeech, level, difficulty, category] = parts;
-                if (word && meaning && example) {
-                    words.push({
-                        id: Date.now() + Math.random(),
-                        word,
-                        meaning,
-                        pronunciation,
-                        example,
-                        translation,
-                        partOfSpeech,
-                        level: level as any,
-                        difficulty: difficulty as any,
-                        category,
-                        mastered: false,
-                        studies: [],
-                    });
-                }
-            }
-        });
-        return { words, analysis };
-    };
-
-    const handleGenerateList = async () => {
-        if (!aiPrompt.trim()) {
-            alert("Please describe what you want to learn.");
-            return;
-        }
-        setIsGeneratingList(true);
-        setAiGeneratedList(null);
-        setAiAnalysis('');
-        try {
-            const prompt = `You are an expert English teacher and vocabulary curriculum designer. USER REQUEST: "${aiPrompt}". SETTINGS: Number of words: ${aiWordCount}, Level: ${aiLevel === 'auto' ? 'auto-detect appropriate level' : aiLevel}. TASK: Generate a comprehensive vocabulary list. OUTPUT FORMAT (one word per line): word | Vietnamese meaning | IPA pronunciation | example sentence | Vietnamese translation of example | part of speech | CEFR level | difficulty (easy/medium/hard) | category/topic. REQUIREMENTS: Words must be relevant. Examples must be practical. Accurate translations. Appropriate CEFR level. IMPORTANT: Start your response with a brief analysis of the generated list inside [ANALYSIS]...[/ANALYSIS] tags, then provide the word list. Generate ${aiWordCount} words now:`;
-            const responseText = await generateAIContent(prompt, false);
-
-            if (!responseText) throw new Error("AI did not return a valid response.");
-
-            const { words, analysis } = parseAIVocabularyResponse(responseText);
-
-            if (words.length === 0) {
-                throw new Error("AI did not return any valid words. Please try a different prompt.");
-            }
-
-            const newList: VocabularyList = {
-                id: Date.now(),
-                name: `AI: ${aiPrompt.substring(0, 20)}...`,
-                description: `A custom list generated for: "${aiPrompt}"`,
-                icon: "🤖",
-                level: "Mixed",
-                category: "ai-generated",
-                totalWords: words.length,
-                words: words,
-                isAI: true,
-            };
-
-            setAiGeneratedList(newList);
-            setAiAnalysis(analysis);
-            setView('aiResult');
-
-        } catch (error) {
-            console.error("AI Generation Error:", error);
-            alert("An error occurred while generating the list. Please try again.");
-        } finally {
-            setIsGeneratingList(false);
-        }
-    };
-    
-    const handleSaveAIList = () => {
-        if (!aiGeneratedList || !englishData) return;
-
-        setEnglishData(prevData => {
-            if (!prevData) return prevData;
-            
-            const newData = { ...prevData };
-            newData.vocabularyLists.push(aiGeneratedList);
-            newData.userProgress[aiGeneratedList.id] = {
-                wordsLearned: [],
-                wordsMastered: [],
-                totalWords: aiGeneratedList.totalWords,
-            };
-            newData.unlockedLists.push(aiGeneratedList.id);
-            return newData;
-        });
-
-        checkAndAwardBadges();
-        handleSelectList(aiGeneratedList);
-    };
-
-    // --- RENDER FUNCTIONS ---
-    const renderBrowseScreen = () => {
-        if (!englishData) return null;
-        
-        return (
-             <div className="max-w-7xl mx-auto w-full p-6">
-                 <div className="flex justify-between items-center mb-6">
-                    <h2 className="text-3xl font-bold">English Vocabulary 🇬🇧</h2>
-                    <button onClick={() => setView('aiGenerator')} className="flex items-center gap-2 bg-gradient-to-r from-purple-500 to-pink-500 text-white font-bold py-2 px-4 rounded-lg hover:scale-105 transition-transform">
-                        <Sparkles size={16}/> Create with AI ✨
-                    </button>
-                 </div>
-                 <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-                    {englishData.vocabularyLists.map((list) => {
-                        const progress = englishData.userProgress[list.id];
-                        const learnedPercent = progress ? (progress.wordsLearned.length / progress.totalWords) * 100 : 0;
-                        const isUnlocked = englishData.unlockedLists.includes(list.id);
-
-                        return (
-                            <div key={list.id} className={`rounded-2xl shadow-lg flex flex-col transition-all duration-300 ${isUnlocked ? (darkMode ? 'bg-gray-800' : 'bg-white') : (darkMode ? 'bg-gray-800/50' : 'bg-gray-100')} ${!isUnlocked && 'filter grayscale opacity-60'}`}>
-                                <div className="p-6">
-                                    <div className="flex items-center justify-between mb-4">
-                                        <div className={`text-6xl ${!isUnlocked && 'opacity-50'}`}>{list.icon}</div>
-                                        {isUnlocked ? (
-                                             <span className={`px-3 py-1 text-xs font-semibold rounded-full ${list.isAI ? (darkMode ? 'bg-purple-900 text-purple-300' : 'bg-purple-100 text-purple-800') : (darkMode ? 'bg-blue-900 text-blue-300' : 'bg-blue-100 text-blue-800')}`}>
-                                                {list.isAI ? 'AI' : list.level}
-                                            </span>
-                                        ) : (
-                                            <div className="p-2 bg-gray-500 rounded-full"><Lock size={16} className="text-white"/></div>
-                                        )}
-                                    </div>
-                                    <h3 className={`text-xl font-bold mb-2 ${!isUnlocked && 'opacity-50'}`}>{list.name}</h3>
-                                    <p className={`text-sm mb-4 h-10 ${darkMode ? 'text-gray-400' : 'text-gray-600'} ${!isUnlocked && 'opacity-50'}`}>{list.description}</p>
-                                    <div className={`w-full rounded-full h-2.5 ${darkMode ? 'bg-gray-700' : 'bg-gray-200'}`}>
-                                        <div className="bg-green-500 h-2.5 rounded-full" style={{width: `${learnedPercent}%`}}></div>
-                                    </div>
-                                    <p className={`text-xs text-right mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-500'}`}>{progress.wordsLearned.length} / {progress.totalWords} learned</p>
-                                </div>
-                                <div className={`mt-auto p-4 ${darkMode ? 'bg-gray-700/50' : 'bg-gray-50'} rounded-b-2xl`}>
-                                    <button
-                                        onClick={() => handleSelectList(list)}
-                                        disabled={!isUnlocked}
-                                        className="w-full bg-blue-500 hover:bg-blue-600 disabled:bg-gray-400 disabled:cursor-not-allowed text-white font-bold py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition"
-                                    >
-                                        <Play size={16} /> {progress?.wordsLearned.length > 0 ? 'Continue' : 'Start Learning'}
-                                    </button>
-                                </div>
-                            </div>
-                        );
-                    })}
-                 </div>
-             </div>
-        )
-    };
-    
-    const GameWrapper = ({ title, children, onExit }: { title: string, children: React.ReactNode, onExit: () => void }) => (
-        <div className={`p-4 sm:p-6 flex flex-col items-center justify-center min-h-full ${darkMode ? 'bg-gray-800' : 'bg-blue-50'}`}>
-            <div className={`w-full max-w-2xl`}>
-                 <div className={`mb-6 ${darkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg p-4 shadow-lg`}>
-                    <div className="flex justify-between items-center mb-3">
-                        <h2 className="text-2xl font-bold">{title}</h2>
-                        <button onClick={onExit} className={`${darkMode ? 'text-gray-400 hover:text-white' : 'text-red-600 hover:text-red-800'}`}><X size={28} /></button>
-                    </div>
-                    {!gameFinished && (
-                         <>
-                         <div className="w-full bg-gray-200 rounded-full h-3 mb-2">
-                            <div className="bg-green-600 h-full rounded-full transition-all" style={{ width: `${((currentGameIndex + 1) / gameWords.length) * 100}%` }}></div>
-                        </div>
-                        <div className="flex justify-between text-sm text-gray-500">
-                           <span>Câu {currentGameIndex + 1} / {gameWords.length}</span>
-                           <span>Điểm: {gameScore}</span>
-                        </div>
-                        </>
-                    )}
+    const renderGameContainer = (title: string, children: React.ReactNode) => (
+        <div className="max-w-3xl mx-auto">
+            <div className={`text-center mb-6 p-4 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
+                <h2 className="text-2xl font-bold">{title}</h2>
+                <div className="flex justify-center gap-8 mt-2 text-sm">
+                    <span>Score: {gameScore}</span>
+                    <span>Question: {currentGameIndex + 1} / {gameWords.length}</span>
                 </div>
-                 <div className={`${darkMode ? 'bg-gray-900' : 'bg-white'} p-6 rounded-2xl shadow-xl`}>
-                    {gameFinished ? (
-                         <div className="text-center py-8">
-                            <h3 className="text-3xl font-bold text-green-500 mb-4">Hoàn thành!</h3>
-                            <p className="text-2xl mb-2">Điểm của bạn: <span className="font-bold">{gameScore} / {gameWords.length}</span></p>
-                            <p className="text-lg mb-6">Bạn nhận được <span className="font-bold text-yellow-500">{gameScore * 20} XP!</span></p>
-                            <button onClick={onExit} className="bg-blue-500 text-white px-6 py-3 rounded-lg font-bold">Quay lại</button>
-                         </div>
-                    ) : children}
-                 </div>
             </div>
+            {gameFinished ? (
+                 <div className={`text-center p-8 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
+                    <h3 className="text-3xl font-bold mb-4">Game Over!</h3>
+                    <p className="text-xl mb-6">Your final score is: <span className="font-bold text-green-500">{gameScore} / {gameWords.length}</span></p>
+                    <button onClick={handleBackToListDetail} className="bg-indigo-500 hover:bg-indigo-600 text-white px-6 py-2 rounded-lg font-semibold">Back to List</button>
+                </div>
+            ) : (
+                <div className={`p-8 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
+                    {children}
+                </div>
+            )}
         </div>
     );
-    
-    const renderListDetailScreen = () => {
-        if (!selectedList || !englishData) return null;
-        const progress = englishData.userProgress[selectedList.id];
-        const learnedPercent = progress ? (progress.wordsLearned.length / progress.totalWords) * 100 : 0;
-        
-        const allLearningModes = [
-            // Core
-            { id: 'flashcards', name: 'Flashcards', description: 'Ôn tập từ vựng cốt lõi.', icon: BookOpen, action: () => startFlashcards(selectedList), category: 'Core', disabled: false },
-            { id: 'quiz', name: 'Quiz', description: 'Kiểm tra kiến thức trắc nghiệm.', icon: Lightbulb, action: () => startQuiz(selectedList), category: 'Core', disabled: false },
-             // Games
-            { id: 'memory_cards', name: 'Memory Cards', description: 'Ghép từ với nghĩa của chúng.', icon: Copy, action: () => startMatchingGame(selectedList), category: 'Games', disabled: false },
-            { id: 'word_search', name: 'Word Search', description: 'Tìm từ vựng trong lưới chữ.', icon: Search, action: () => startWordSearch(selectedList), category: 'Games', disabled: false },
-            { id: 'crossword', name: 'Crossword', description: 'Giải ô chữ với các từ đã học.', icon: Puzzle, action: () => startCrossword(selectedList), category: 'Games', disabled: false },
-            { id: 'pronunciation_challenge', name: 'Pronunciation', description: 'So sánh phát âm với AI.', icon: Mic, action: () => startPronunciationChallenge(selectedList), category: 'Games', disabled: false },
-            { id: 'spelling_bee', name: 'Spelling Bee', description: 'Luyện tập chính tả.', icon: SpellCheck, action: () => startSpellingBee(selectedList), category: 'Games', disabled: false },
-            { id: 'anagrams', name: 'Anagrams', description: 'Sắp xếp lại các chữ cái.', icon: Shuffle, action: () => startAnagram(selectedList), category: 'Games', disabled: false },
-            { id: 'guess_the_word', name: 'Guess the Word', description: 'Đoán từ dựa trên gợi ý.', icon: HelpCircle, action: () => startGuessTheWord(selectedList), category: 'Games', disabled: false },
-            { id: 'word_shooting', name: 'Word Shooting', description: 'Bắn từ đúng theo nghĩa.', icon: Crosshair, category: 'Games', disabled: true },
-            // Practice
-            { id: 'sentence_scramble', name: 'Sentence Scramble', description: 'Sắp xếp câu đúng thứ tự.', icon: Combine, action: () => startSentenceScramble(selectedList), category: 'Practice', disabled: false },
-            { id: 'dictation', name: 'Dictation', description: 'Nghe và viết lại câu.', icon: PenSquare, action: () => startDictation(selectedList), category: 'Practice', disabled: false },
-            { id: 'shadowing', name: 'Shadowing', description: 'Lặp lại theo người bản xứ.', icon: Voicemail, action: () => startShadowing(selectedList), category: 'Practice', disabled: false },
-            { id: 'error_correction', name: 'Error Correction', description: 'Tìm và sửa lỗi sai trong câu.', icon: CheckCircle2, action: () => startErrorCorrection(selectedList), category: 'Practice', disabled: false },
-            { id: 'collocations', name: 'Collocations', description: 'Học các cụm từ đi liền nhau.', icon: Link, action: () => startCollocations(selectedList), category: 'Practice', disabled: false },
-            { id: 'synonym_antonym', name: 'Synonym/Antonym', description: 'Tìm từ đồng nghĩa/trái nghĩa.', icon: ArrowRightLeft, action: () => startSynonymAntonym(selectedList), category: 'Practice', disabled: false },
-            { id: 'role_play', name: 'Role-Play', description: 'Thực hành hội thoại theo tình huống.', icon: Users, category: 'Practice', disabled: true },
-            { id: 'phrasal_verbs', name: 'Phrasal Verbs', description: 'Luyện tập các cụm động từ.', icon: Milestone, category: 'Practice', disabled: true },
-            // Advanced
-            { id: 'reading_comprehension', name: 'Reading Comprehension', description: 'Đọc hiểu đoạn văn.', icon: FileText, category: 'Advanced', disabled: true },
-            { id: 'audio_stories', name: 'Audio Stories', description: 'Nghe truyện ngắn và trả lời câu hỏi.', icon: AudioLines, category: 'Advanced', disabled: true },
-            { id: 'image_description', name: 'Image Description', description: 'Mô tả hình ảnh bằng tiếng Anh.', icon: Image, category: 'Advanced', disabled: true },
-            { id: 'video_lessons', name: 'Video Lessons', description: 'Học qua các bài giảng video.', icon: Youtube, category: 'Advanced', disabled: true },
-            { id: 'ai_chat', name: 'AI Chat', description: 'Trò chuyện với AI về chủ đề.', icon: Bot, category: 'Advanced', disabled: true },
-            { id: 'graded_reading', name: 'GradedReading', description: 'Đọc các bài báo được phân cấp.', icon: BookCopy, category: 'Advanced', disabled: true },
-            { id: 'progress_tracking', name: 'Progress Tracking', description: 'Xem biểu đồ tiến độ chi tiết.', icon: TrendingUp, category: 'Advanced', disabled: true },
-            { id: 'daily_goals', name: 'Daily Goals', description: 'Đặt và theo dõi mục tiêu hàng ngày.', icon: CalendarCheck, category: 'Advanced', disabled: true },
-            { id: 'review_manager', name: 'Review Manager', description: 'Quản lý lịch trình ôn tập.', icon: RefreshCw, category: 'Advanced', disabled: true },
-            { id: 'topic_maps', name: 'Topic Maps', description: 'Khám phá các từ liên quan.', icon: Map, category: 'Advanced', disabled: true },
-            { id: 'study_plan', name: 'Study Plan', description: 'Tạo kế hoạch học tập cá nhân.', icon: CalendarDays, category: 'Advanced', disabled: true },
-        ];
-        // ... rest of the function
-    };
-    
-    // ... many more render functions for games
-    
-    const renderAIResultScreen = () => {
-        // ...
-    }
-    
-    const renderAIGeneratorScreen = () => {
-        // ...
-    }
 
-    const renderGameLoadingScreen = () => {
-        // ...
-    }
-    
-    // --- RENDER LOGIC ---
-    if (gameLoadingState.isLoading) {
-        return renderGameLoadingScreen();
-    }
 
-    switch (view) {
-        case 'browse':
-            return renderBrowseScreen();
-        case 'listDetail':
-            return renderListDetailScreen();
-        case 'flashcards':
-            if (!selectedList) return handleBackToListDetail();
-            const currentCard = selectedList.words[currentCardIndex];
-            const progress = ((currentCardIndex + 1) / selectedList.words.length) * 100;
-            return (
-                 <div className={`min-h-screen ${darkMode ? 'bg-gray-900 text-white' : 'bg-gradient-to-br from-blue-50 to-indigo-100'} p-6 flex items-center justify-center`}>
-                    <div className="w-full max-w-3xl">
-                        {/* Header */}
-                        <div className={`mb-6 ${darkMode ? 'bg-gray-800' : 'bg-white'} rounded-lg p-4 shadow-lg`}>
-                            <div className="flex justify-between items-center mb-3">
-                                <h2 className="text-2xl font-bold">{selectedList?.name}</h2>
-                                <button onClick={exitFlashcardMode} className={`${darkMode ? 'text-gray-400 hover:text-white' : 'text-red-600 hover:text-red-800'}`}><X size={28} /></button>
-                            </div>
-                            <div className="w-full bg-gray-200 rounded-full h-3"><div className="bg-indigo-600 h-full rounded-full transition-all" style={{ width: progress + '%' }}></div></div>
-                            <p className="text-sm text-gray-500 mt-2">Từ {currentCardIndex + 1} / {selectedList.words.length}</p>
-                        </div>
-                        {/* Card */}
-                        <div className={`relative mb-8 p-12 rounded-2xl shadow-2xl min-h-[24rem] flex flex-col items-center justify-center transition-transform duration-500 ${revealed ? 'transform [rotateY(180deg)]' : ''}`}>
-                            {/* Front of Card */}
-                            <div className={`absolute inset-0 w-full h-full flex flex-col items-center justify-center p-12 rounded-2xl backface-hidden ${darkMode ? 'bg-gradient-to-br from-blue-900 to-indigo-900 border-indigo-600 text-white' : 'bg-gradient-to-br from-blue-600 to-indigo-700 border-4 border-indigo-800 text-white'}`}>
-                                 <p className="text-sm uppercase opacity-75 mb-4">Mặt trước</p>
-                                 <h3 className="text-5xl font-bold">{currentCard.word}</h3>
-                                 <p className="mt-4 text-xl opacity-80">/{currentCard.pronunciation}/</p>
-                                  <button onClick={(e) => handlePronounce(currentCard.word, e)} className="mt-6 p-3 bg-white/20 rounded-full hover:bg-white/30 transition">
-                                     <Volume2 size={24} />
-                                 </button>
-                            </div>
-                             {/* Back of Card */}
-                            <div className={`absolute inset-0 w-full h-full flex flex-col items-center justify-center p-12 rounded-2xl backface-hidden transform [rotateY(180deg)] ${darkMode ? 'bg-gradient-to-br from-green-900 to-green-800 border-green-600' : 'bg-gradient-to-br from-green-100 to-green-50 border-4 border-green-400'}`}>
-                                 <p className={`text-sm uppercase mb-4 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Mặt sau</p>
-                                 <h4 className="text-3xl font-bold mb-2">{currentCard.meaning}</h4>
-                                 <p className="italic text-lg mb-4">({currentCard.partOfSpeech})</p>
-                                 <p className="text-center">{currentCard.example}</p>
-                                 <p className="text-center text-sm opacity-70 mt-1">{currentCard.translation}</p>
-                            </div>
-                        </div>
-                         {/* Controls */}
-                        <div className="h-36 flex items-center justify-center">
-                            {!revealed ? (
-                                <button onClick={() => setRevealed(true)} className={`inline-flex items-center gap-3 px-10 py-4 rounded-lg font-bold text-lg transition shadow-xl transform hover:scale-105 ${darkMode ? 'bg-yellow-500 hover:bg-yellow-400 text-black' : 'bg-yellow-400 hover:bg-yellow-500 text-black'}`}>
-                                    Lật thẻ
+    const renderContent = () => {
+        if (!englishData) return <div className="text-center p-8">Loading data...</div>;
+
+        switch (view) {
+            case 'browse':
+                return (
+                    <div>
+                        <h2 className="text-3xl font-bold mb-6">Vocabulary Lists</h2>
+                        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                            {englishData.vocabularyLists.map(list => (
+                                <button key={list.id} onClick={() => handleSelectList(list)} className={`p-4 rounded-lg text-left ${darkMode ? 'bg-gray-800 hover:bg-gray-700' : 'bg-white hover:bg-gray-50'} border ${darkMode ? 'border-gray-700' : 'border-gray-200'}`}>
+                                    <h3 className="font-bold">{list.name}</h3>
+                                    <p className="text-sm opacity-75">{list.description}</p>
                                 </button>
-                            ) : isAwaitingNext ? (
-                                <button onClick={goToNextCard} className={`inline-flex items-center gap-3 px-10 py-4 rounded-lg font-bold text-lg transition shadow-xl transform hover:scale-105 ${darkMode ? 'bg-indigo-600 hover:bg-indigo-500 text-white' : 'bg-indigo-600 hover:bg-indigo-700 text-white'} animate-pulse`}>
-                                    Tiếp theo <ChevronRight size={24} />
-                                </button>
-                            ) : (
-                                <div className="grid grid-cols-2 sm:grid-cols-4 gap-4 w-full">
-                                    {confidenceLevels.map((level) => (
-                                        <button key={level.value} onClick={() => handleConfidenceSelect(level.value)} className={`p-4 rounded-lg font-bold text-lg transition ${level.color} flex flex-col items-center justify-center space-y-2 h-32 hover:scale-105 transform ${selectedConfidence === level.value ? 'ring-4 ring-offset-2 ring-indigo-500 dark:ring-offset-gray-900' : ''}`}>
-                                            <span className="text-4xl">{level.emoji}</span>
-                                            <span>{level.label}</span>
-                                        </button>
-                                    ))}
-                                </div>
-                            )}
+                            ))}
                         </div>
                     </div>
-                 </div>
-            );
-        case 'matching':
-            // ...
-        case 'quiz':
-            // ...
-        case 'aiGenerator':
-            return renderAIGeneratorScreen();
-        case 'aiResult':
-            return renderAIResultScreen();
-    }
-
-    // FIX: Added a default return to satisfy the React.FC type, which requires a ReactNode to be returned.
-    return null;
+                );
+            case 'listDetail':
+                if (!selectedList) return null;
+                return (
+                    <div>
+                        <h2 className="text-3xl font-bold mb-2">{selectedList.name}</h2>
+                        <p className="mb-6 opacity-75">{selectedList.description}</p>
+                        <h3 className="font-bold mb-2">Study Modes</h3>
+                        <div className="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+                            <button onClick={() => startFlashcards(selectedList)} className="p-4 rounded-lg bg-blue-500 text-white font-semibold">Flashcards</button>
+                            <button onClick={() => startMatchingGame(selectedList)} className="p-4 rounded-lg bg-green-500 text-white font-semibold">Matching</button>
+                            <button onClick={() => startQuiz(selectedList)} className="p-4 rounded-lg bg-purple-500 text-white font-semibold">Quiz</button>
+                            <button onClick={() => startSpellingBee(selectedList)} className="p-4 rounded-lg bg-yellow-500 text-white font-semibold">Spelling</button>
+                        </div>
+                        <h3 className="font-bold mb-2">Words in this list ({selectedList.words.length})</h3>
+                        <div className="space-y-2">
+                             {selectedList.words.map(word => (
+                                <div key={word.id} className={`p-3 rounded-lg ${darkMode ? 'bg-gray-800' : 'bg-white'}`}>
+                                    <p><strong className="font-semibold">{word.word}</strong>: {word.meaning}</p>
+                                </div>
+                             ))}
+                        </div>
+                    </div>
+                );
+            case 'flashcards':
+                if (!selectedList) return null;
+                const currentWord = selectedList.words[currentCardIndex];
+                return (
+                    <div className="max-w-2xl mx-auto text-center">
+                        <div className={`w-full h-80 rounded-2xl p-8 flex items-center justify-center cursor-pointer transition-transform duration-500 relative [transform-style:preserve-3d] ${revealed ? '[transform:rotateY(180deg)]' : ''} ${darkMode ? 'bg-gray-800' : 'bg-white'}`}
+                             onClick={() => setRevealed(!revealed)}
+                        >
+                            <div className="absolute w-full h-full flex flex-col items-center justify-center [backface-visibility:hidden]">
+                                <p className="text-4xl font-bold">{currentWord.word}</p>
+                                <p className="mt-2 text-lg opacity-75">/{currentWord.pronunciation}/</p>
+                            </div>
+                            <div className="absolute w-full h-full flex flex-col items-center justify-center [backface-visibility:hidden] [transform:rotateY(180deg)]">
+                                <p className="text-2xl font-semibold">{currentWord.meaning}</p>
+                                <p className="mt-4 italic">"{currentWord.example}"</p>
+                            </div>
+                        </div>
+                        
+                        {revealed && (
+                            <div className="mt-8 grid grid-cols-2 md:grid-cols-4 gap-4">
+                                {confidenceLevels.map(level => (
+                                    <button key={level.value} onClick={() => handleConfidenceSelect(level.value)}
+                                            className={`p-4 rounded-lg font-bold bg-opacity-80 hover:bg-opacity-100 text-white`} style={{backgroundColor: level.color}}>
+                                        {level.emoji} {level.label}
+                                    </button>
+                                ))}
+                            </div>
+                        )}
+                    </div>
+                );
+            case 'spellingBee':
+                return renderGameContainer('Spelling Bee', (
+                    <form onSubmit={handleSpellingSubmit}>
+                        <p className="text-center mb-4">Listen to the word and spell it correctly.</p>
+                        <button type="button" onClick={() => handlePronounce(gameWords[currentGameIndex].word)} className={`mx-auto flex items-center justify-center w-20 h-20 rounded-full mb-6 ${darkMode ? 'bg-blue-800' : 'bg-blue-100'}`}><Volume2 size={32} className="text-blue-500" /></button>
+                        <input type="text" value={userInput} onChange={e => setUserInput(e.target.value)} className={`w-full text-center p-3 text-xl rounded-lg border-2 ${darkMode ? 'bg-gray-700 border-gray-600' : 'border-gray-300'}`} />
+                        <button type="submit" className="mt-4 w-full bg-indigo-500 text-white p-3 rounded-lg font-semibold">Check</button>
+                         {inputStatus === 'correct' && <p className="text-green-500 mt-2 text-center">Correct!</p>}
+                         {inputStatus === 'incorrect' && <p className="text-red-500 mt-2 text-center">Incorrect. The answer is: {gameWords[currentGameIndex].word}</p>}
+                    </form>
+                ));
+            default:
+                return <div>Unhandled view: {view}</div>;
+        }
+    };
+    
+    return (
+        <div className={`fixed inset-0 z-50 flex flex-col ${darkMode ? 'bg-gray-900 text-white' : 'bg-gray-100 text-gray-900'}`}>
+            <header className={`${darkMode ? 'bg-gray-800' : 'bg-white'} p-4 shadow-md flex justify-between items-center`}>
+                <div className="flex items-center gap-2">
+                    {view !== 'browse' && <button onClick={view === 'listDetail' ? handleBackToLists : handleBackToListDetail}><ChevronLeft size={24} /></button>}
+                    <h1 className="text-xl font-bold">{view === 'browse' ? 'English Learning' : selectedList?.name || 'Game'}</h1>
+                </div>
+                <button onClick={onClose}><X size={24} /></button>
+            </header>
+            <main className="flex-1 overflow-y-auto p-6">{renderContent()}</main>
+        </div>
+    );
 };
-
-export default EnglishLearningModule;

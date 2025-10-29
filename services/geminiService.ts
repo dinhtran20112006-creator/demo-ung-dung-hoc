@@ -11,10 +11,13 @@ const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
 export async function explainTopic(topic: string): Promise<string> {
   try {
     const response = await ai.models.generateContent({
-      model: 'gemini-2.5-flash',
+      model: 'gemini-2.5-pro',
       contents: `Hãy giải thích chủ đề sau một cách rõ ràng và dễ hiểu cho người mới bắt đầu: "${topic}". 
       Sử dụng ngôn ngữ đơn giản, các ví dụ nếu cần, và định dạng câu trả lời bằng Markdown. 
       Tập trung vào các khái niệm cốt lõi.`,
+      config: {
+        thinkingConfig: { thinkingBudget: 32768 }
+      }
     });
     return response.text;
   } catch (error) {
@@ -26,7 +29,7 @@ export async function explainTopic(topic: string): Promise<string> {
 export async function generateQuiz(topic: string): Promise<QuizData> {
   try {
     const response = await ai.models.generateContent({
-      model: "gemini-2.5-flash",
+      model: "gemini-2.5-pro",
       contents: `Dựa trên chủ đề "${topic}", hãy tạo một bài trắc nghiệm gồm 5 câu hỏi để kiểm tra kiến thức. 
       Mỗi câu hỏi phải có 4 lựa chọn và chỉ một câu trả lời đúng.`,
       config: {
@@ -62,6 +65,7 @@ export async function generateQuiz(topic: string): Promise<QuizData> {
           },
           required: ["questions"],
         },
+        thinkingConfig: { thinkingBudget: 32768 }
       },
     });
 

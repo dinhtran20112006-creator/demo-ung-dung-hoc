@@ -1,12 +1,12 @@
-
 import React, { useState, useMemo } from 'react';
-import { ChevronLeft, ChevronRight, X } from 'lucide-react';
+import { ChevronLeft, ChevronRight, X, Brain } from 'lucide-react';
 
 // Interfaces should be imported from a central types file if they exist
 interface Topic {
     id: number;
     question: string;
     dueDate?: string;
+    stability?: number;
 }
 interface Chapter {
     id: number;
@@ -23,15 +23,19 @@ interface CalendarViewProps {
     subjects: Subject[];
     darkMode: boolean;
     onClose: () => void;
+    getWeakestTopics: (subject: Subject, count?: number) => Topic[];
 }
 
-const CalendarView: React.FC<CalendarViewProps> = ({ subjects, darkMode, onClose }) => {
+const CalendarView: React.FC<CalendarViewProps> = ({ subjects, darkMode, onClose, getWeakestTopics }) => {
     const [currentDate, setCurrentDate] = useState(new Date());
     const [selectedDate, setSelectedDate] = useState<string | null>(null);
 
-    const scheduledTopics = useMemo(() => {
+    const { scheduledTopics, suggestedTopics } = useMemo(() => {
         const schedule: { [key: string]: (Topic & { subjectName: string; chapterName: string })[] } = {};
+        const suggestions: (Topic & { subjectName: string; chapterName: string })[] = [];
+
         subjects.forEach(subject => {
+             // Get due topics
             subject.chapters.forEach(chapter => {
                 chapter.topics.forEach(topic => {
                     if (topic.dueDate) {
@@ -46,9 +50,22 @@ const CalendarView: React.FC<CalendarViewProps> = ({ subjects, darkMode, onClose
                     }
                 });
             });
+            // Get suggested weakest topics per subject
+             const weakest = getWeakestTopics(subject, 3); // Get top 3 weakest
+             weakest.forEach(topic => {
+                const chapter = subject.chapters.find(c => c.topics.some(t => t.id === topic.id));
+                if(chapter) {
+                    suggestions.push({
+                        ...topic,
+                        subjectName: subject.name,
+                        chapterName: chapter.name
+                    })
+                }
+             })
+
         });
-        return schedule;
-    }, [subjects]);
+        return { scheduledTopics: schedule, suggestedTopics: suggestions };
+    }, [subjects, getWeakestTopics]);
 
     const handlePrevMonth = () => {
         setCurrentDate(new Date(currentDate.getFullYear(), currentDate.getMonth() - 1, 1));
@@ -139,7 +156,7 @@ const CalendarView: React.FC<CalendarViewProps> = ({ subjects, darkMode, onClose
                 {/* Details Panel */}
                 <div className={`w-1/2 p-6 flex flex-col ${darkMode ? 'bg-gray-800/50' : 'bg-gray-50'}`}>
                     <h3 className="text-xl font-bold mb-4">
-                        {selectedDate ? `Câu hỏi ôn tập ngày ${new Date(selectedDate + 'T00:00:00').toLocaleDateString('vi-VN')}` : "Chọn một ngày để xem"}
+                        {selectedDate ? `Câu hỏi ôn tập ngày ${new Date(selectedDate + 'T00:00:00').toLocaleDateString('vi-VN')}` : "Gợi ý & Lịch trình"}
                     </h3>
                     <div className="flex-1 overflow-y-auto pr-2">
                         {selectedDate ? (
@@ -158,8 +175,24 @@ const CalendarView: React.FC<CalendarViewProps> = ({ subjects, darkMode, onClose
                                 </div>
                             )
                         ) : (
-                             <div className="text-center pt-16">
-                                <p className={`${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Chọn một ngày trên lịch để xem các câu hỏi cần ôn tập.</p>
+                            <div>
+                                <h4 className="font-semibold mb-3 flex items-center gap-2">
+                                    <Brain size={16} className="text-purple-500" />
+                                    AI gợi ý ôn tập (Điểm yếu nhất)
+                                </h4>
+                                {suggestedTopics.length > 0 ? (
+                                    <ul className="space-y-2">
+                                    {suggestedTopics.map(topic => (
+                                        <li key={topic.id} className={`p-3 rounded-lg ${darkMode ? 'bg-gray-700' : 'bg-white border'}`}>
+                                            <p className="font-semibold text-sm">{topic.question}</p>
+                                            <p className={`text-xs mt-1 ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>{topic.subjectName} &gt; {topic.chapterName}</p>
+                                        </li>
+                                    ))}
+                                    </ul>
+                                ) : (
+                                    <p className={`text-sm ${darkMode ? 'text-gray-400' : 'text-gray-600'}`}>Tuyệt vời! Không có điểm yếu nào được phát hiện.</p>
+                                )}
+                                <p className="text-center text-sm mt-8 text-gray-500">Hoặc chọn một ngày trên lịch để xem lịch trình.</p>
                             </div>
                         )}
                     </div>
